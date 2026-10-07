@@ -116,6 +116,10 @@ def _playwright_browsers_path():
     return str(home / ".cache/ms-playwright")
 
 
+# Resolved at import time: the pytester fixture redirects HOME before the test runs.
+REAL_BROWSERS_PATH = _playwright_browsers_path()
+
+
 UI_PYPROJECT = (
     PYPROJECT.replace('packs = ["ai"]', "packs = []")
     + """
@@ -160,7 +164,7 @@ def see_summary(page):
 
 @pytest.mark.skipif(not _browser_available(), reason="no Playwright browser available")
 def test_ui_failure_traces_symptom_to_api(pytester, monkeypatch):
-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path())
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
     pytester.makefile(".toml", pyproject=UI_PYPROJECT)
     pytester.makefile(".feature", dashboard=UI_FEATURE)
     pytester.makeconftest(UI_STEPS)
