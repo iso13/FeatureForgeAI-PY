@@ -1,7 +1,10 @@
 """Run real pytest sessions through the plugin (pytester) and check the outputs."""
 
 import json
+import os
+import sys
 from importlib.metadata import entry_points
+from pathlib import Path
 
 import pytest
 
@@ -96,6 +99,23 @@ def _browser_available():
     return True
 
 
+def _playwright_browsers_path():
+    """Where Playwright keeps browsers for the *real* user.
+
+    pytester points HOME at a temp dir for child sessions, so without this the
+    child looks for browsers under the temp HOME and fails to launch.
+    """
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured:
+        return configured
+    home = Path.home()
+    if sys.platform == "darwin":
+        return str(home / "Library/Caches/ms-playwright")
+    if sys.platform == "win32":
+        return str(Path(os.environ.get("LOCALAPPDATA", home)) / "ms-playwright")
+    return str(home / ".cache/ms-playwright")
+
+
 UI_PYPROJECT = (
     PYPROJECT.replace('packs = ["ai"]', "packs = []")
     + """
@@ -139,7 +159,8 @@ def see_summary(page):
 
 
 @pytest.mark.skipif(not _browser_available(), reason="no Playwright browser available")
-def test_ui_failure_traces_symptom_to_api(pytester):
+def test_ui_failure_traces_symptom_to_api(pytester, monkeypatch):
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path())
     pytester.makefile(".toml", pyproject=UI_PYPROJECT)
     pytester.makefile(".feature", dashboard=UI_FEATURE)
     pytester.makeconftest(UI_STEPS)
