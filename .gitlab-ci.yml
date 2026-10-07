@@ -1,0 +1,58 @@
+# FeatureForge AI (Python) — GitLab CI
+# Stages: static checks → BDD qualification → demo of the intelligence layer.
+# Reports land in GitLab's test widgets (JUnit) and as artifacts (Cucumber JSON,
+# developer briefs, run metrics) so quality trends can be tracked per pipeline.
+
+default:
+  image: python:3.12-bookworm
+  cache:
+    key: pip-$CI_COMMIT_REF_SLUG
+    paths: [.cache/pip]
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  HEADLESS: "true"
+  ENV: "qa"
+
+stages: [static, qualify, insight]
+
+.install: &install
+  - python -m pip install --upgrade pip
+  - pip install -e ".[all]"
+  - python -m playwright install --with-deps chromium
+
+lint-and-types:
+  stage: static
+  script:
+    - *install
+    - ruff check src tests
+    - ruff format --check src tests
+    - mypy
+    - featureforge lint
+
+unit-and-bdd:
+  stage: qualify
+  script:
+    - *install
+    - mkdir -p reports/cucumber reports/junit
+    - >
+      pytest
+      --junitxml=reports/junit/junit.xml
+      --cucumberjson=reports/cucumber/cucumber_report.json
+    - featureforge metrics
+  artifacts:
+    when: always
+    expire_in: 30 days
+    reports:
+      junit: reports/junit/junit.xml
+    paths: [reports/]
+
+intelligence-demo:
+  stage: insight
+  allow_failure: true # the demo scenario fails on purpose
+  script:
+    - *install
+    - featureforge run --tags "@demo"
+  artifacts:
+    when: always
+    paths: [reports/intelligence/]

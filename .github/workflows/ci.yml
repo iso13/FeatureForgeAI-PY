@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          pip install -e ".[all]"
+          python -m playwright install --with-deps chromium
+      - name: Static checks
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+          mypy
+          featureforge lint
+      - name: Unit + BDD
+        env:
+          HEADLESS: "true"
+        run: |
+          mkdir -p reports/cucumber reports/junit
+          pytest --junitxml=reports/junit/junit.xml --cucumberjson=reports/cucumber/cucumber_report.json
+          featureforge metrics
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-${{ matrix.python-version }}
+          path: reports/

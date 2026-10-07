@@ -1,0 +1,19 @@
+Business Source License 1.1
+
+Licensor: David Tran
+Licensed Work: FeatureForgeAI
+Copyright: (c) 2024-2025 David Tran
+Additional Use Grant: Non-production evaluation and testing only.
+Change Date: January 1, 2029
+Change License: MIT
+
+Contact: davidtran@featuregen.ai
+
+Terms
+
+Non-production use permitted under this license.
+Commercial use requires a separate license from the Licensor.
+On the Change Date this license converts to MIT.
+All copies are subject to this License.
+
+PROVIDED AS IS. NO WARRANTIES OF ANY KIND.
