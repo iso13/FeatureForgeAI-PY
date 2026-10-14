@@ -1,0 +1,69 @@
+# Numerical tolerance policy for the inference pack.
+#
+# What "close enough to the reference" means, per model and precision. Change it
+# through review like any other code: every run records `version` and the policy
+# fingerprint next to its results, so a loosened limit shows up in run history.
+#
+# Element check (numpy.allclose semantics):  |candidate - reference| <= atol + rtol * |reference|
+# There is no max relative error limit: near-zero reference values make it
+# meaningless (int8 rounds 0.004 to 0.0, a 100% relative error). atol covers that.
+# Perplexity is two-sided: |% change| vs the reference, because drifting "better"
+# (an overconfident model) is still drifting.
+# A rule only lists the limits it changes; everything else comes from [defaults].
+# Lookup, most specific first: "model/dtype" → "*/dtype" → "model/*" → [defaults].
+#
+# Limits below were calibrated on the smoke prompt set (8 prompts × 16 positions ×
+# 64 logits) with ~1.5-2x headroom over the measured error of a healthy build.
+
+[policy]
+version = "2026.10.1"
+owner = "software-quality-engineering"
+reference = "fp32 reference implementation, same weights, CPU"
+
+[defaults]
+# fp32 against the fp32 reference: effectively exact.
+rtol = 1e-5
+atol = 1e-6
+max_mismatch_fraction = 0.0
+min_cosine = 0.99999
+min_top1_agreement = 1.0
+topk = 5
+min_topk_overlap = 1.0
+max_perplexity_delta_pct = 0.01
+
+[rules."*/bf16"]
+# bf16 keeps 8 mantissa bits: relative error per element <= 2^-9 (0.2%).
+# Measured: max rel 0.39%, top1 100%, top5 99.1%, perplexity +0.002%.
+rtol = 0.004
+atol = 0.001
+min_cosine = 0.99999
+min_top1_agreement = 0.99
+min_topk_overlap = 0.98
+max_perplexity_delta_pct = 0.1
+rationale = "bf16 rounding only; any element outside 0.4% relative error is a bug"
+
+[rules."*/fp8_e4m3"]
+# fp8 e4m3 keeps 3 mantissa bits: relative error per element <= 2^-4 (6.25%).
+# Measured: cosine 0.99962, top1 94.5%, top5 93.9%, perplexity +1.5%.
+rtol = 0.0625
+atol = 0.02
+max_mismatch_fraction = 0.001
+min_cosine = 0.9995
+min_top1_agreement = 0.93
+min_topk_overlap = 0.92
+max_perplexity_delta_pct = 2.5
+rationale = "3-bit mantissa; near-ties at the argmax flip, so token agreement is < 100%"
+
+[rules."*/int8"]
+# Symmetric per-row int8: absolute error per element <= max|row| / 254 (~0.062 here).
+# Measured: max abs 0.0624, cosine 0.99998, top1 100%, top5 98.8%, perplexity -0.05%.
+# A 2% scale drift moves perplexity the "good" way (-1.4%) but puts 36% of
+# elements out of tolerance: perplexity alone would pass a broken build.
+rtol = 0.005
+atol = 0.065
+max_mismatch_fraction = 0.001
+min_cosine = 0.9999
+min_top1_agreement = 0.98
+min_topk_overlap = 0.97
+max_perplexity_delta_pct = 1.0
+rationale = "absolute error bounded by the per-row scale; drift shows up as mismatches"

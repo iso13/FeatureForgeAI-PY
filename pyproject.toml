@@ -35,6 +35,7 @@ featureforge = "featureforge.cli:main"
 #   guidewire = "featureforge_guidewire:PACK"
 [project.entry-points."featureforge.packs"]
 ai = "featureforge.packs.ai:PACK"
+inference = "featureforge.packs.inference:PACK"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/featureforge"]
@@ -58,7 +59,7 @@ markers = [
 # ─── FeatureForge settings (env vars and CLI flags override these) ───────────
 [tool.featureforge]
 env = "qa"
-packs = ["ai"]
+packs = ["ai", "inference"]
 reports_dir = "reports"
 
 [tool.featureforge.environments]

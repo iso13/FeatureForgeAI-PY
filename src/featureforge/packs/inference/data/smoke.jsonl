@@ -1,0 +1,8 @@
+{"id": "smoke-01", "prompt": "Summarize the quarterly revenue report in two sentences."}
+{"id": "smoke-02", "prompt": "Translate 'the build is green' into French."}
+{"id": "smoke-03", "prompt": "Write a Python function that reverses a linked list."}
+{"id": "smoke-04", "prompt": "Explain prefill versus decode in LLM inference."}
+{"id": "smoke-05", "prompt": "List three causes of a latency regression after a compiler upgrade."}
+{"id": "smoke-06", "prompt": "What is the capital of Australia?"}
+{"id": "smoke-07", "prompt": "Classify the sentiment: the release went smoothly and on time."}
+{"id": "smoke-08", "prompt": "Draft a one-line commit message for a firmware watchdog fix."}

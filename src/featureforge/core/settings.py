@@ -68,6 +68,7 @@ class Settings(BaseModel):
     reports_dir: Path = Path("reports")
     features_dir: Path = Path("features")  # the project's own feature files
     steps_dir: Path = Path("steps")  # the project's own step definitions
+    tolerance_policy: Path | None = None  # inference pack; None = the pack's tolerances.toml
     lint: LintSettings = Field(default_factory=LintSettings)
 
     @field_validator("env")
@@ -130,6 +131,8 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
     data = dict(section)
     for key in ("reports_dir", "features_dir", "steps_dir"):
         data[key] = (path.parent / str(data.get(key, key.removesuffix("_dir")))).resolve()
+    if "tolerance_policy" in data:
+        data["tolerance_policy"] = (path.parent / str(data["tolerance_policy"])).resolve()
     return data
 
 
@@ -152,6 +155,7 @@ def _from_environ(environ: Mapping[str, str]) -> dict[str, Any]:
         "ollama_host": environ.get("OLLAMA_HOST"),
         "reports_dir": environ.get("FF_REPORTS_DIR"),
         "packs": _split(environ.get("FF_PACKS")),
+        "tolerance_policy": environ.get("FF_TOLERANCE_POLICY"),
     }
     return {key: value for key, value in mapping.items() if value is not None}
 

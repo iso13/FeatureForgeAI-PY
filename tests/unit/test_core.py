@@ -111,3 +111,18 @@ def test_run_metrics_summary(tmp_path):
     again = RunMetrics.read(path)
     assert again.counts == {"passed": 1, "failed": 2, "error": 0, "skipped": 1}
     assert "pass rate 33.3%" in again.render()
+
+
+def test_measure_records_and_replaces_by_name(tmp_path):
+    from featureforge.core.context import ScenarioContext
+    from featureforge.core.settings import Settings
+
+    ctx = ScenarioContext(settings=Settings(reports_dir=tmp_path))
+    ctx.measure("ttft_p50_ms", 20.0, "ms")
+    ctx.measure("ttft_p50_ms", 21.5, "ms")
+    ctx.measure("throughput", 900, "tok/s", higher_is_better=True)
+    assert [(m.name, m.value) for m in ctx.measurements] == [
+        ("ttft_p50_ms", 21.5),
+        ("throughput", 900.0),
+    ]
+    assert ctx.measurements[1].higher_is_better

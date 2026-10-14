@@ -315,6 +315,7 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
             root_cause=brief.root_cause.value if brief else None,
             brief_id=brief.id if brief else None,
             missing_step=info.get("missing_step"),
+            measurements=list(context.measurements) if context is not None else [],
         )
     )
 

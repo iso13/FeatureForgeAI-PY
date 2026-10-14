@@ -25,7 +25,10 @@ class Pack:
     plugin: str  # dotted module path of the pytest plugin with the step definitions
 
 
-BUILTIN_PACKS = {"ai": "featureforge.packs.ai:PACK"}
+BUILTIN_PACKS = {
+    "ai": "featureforge.packs.ai:PACK",
+    "inference": "featureforge.packs.inference:PACK",
+}
 
 
 def _load(reference: str) -> Pack:

@@ -18,6 +18,15 @@ from pydantic import BaseModel, Field
 from featureforge.core.intelligence.models import utc_now
 
 
+class Measurement(BaseModel):
+    """A number a scenario produced (latency, accuracy …), kept for trends and baselines."""
+
+    name: str
+    value: float
+    unit: str = ""
+    higher_is_better: bool = False
+
+
 class ScenarioResult(BaseModel):
     nodeid: str
     feature: str
@@ -30,6 +39,7 @@ class ScenarioResult(BaseModel):
     root_cause: str | None = None
     brief_id: str | None = None
     missing_step: str | None = None
+    measurements: list[Measurement] = Field(default_factory=list)
 
     @property
     def label(self) -> str:

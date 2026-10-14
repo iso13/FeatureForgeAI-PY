@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from featureforge.core.metrics import Measurement
 from featureforge.core.settings import Settings
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ class ScenarioContext:
     step_span: SpanLike | None = None
 
     attachments: list[Attachment] = field(default_factory=list)
+    measurements: list[Measurement] = field(default_factory=list)
     _states: dict[type[Any], Any] = field(default_factory=dict, repr=False)
 
     # ── typed pack state ────────────────────────────────────────────────────
@@ -80,6 +82,17 @@ class ScenarioContext:
 
     def has_tag(self, tag: str) -> bool:
         return tag.lstrip("@") in self.tags
+
+    # ── measurements ────────────────────────────────────────────────────────
+    def measure(
+        self, name: str, value: float, unit: str = "", *, higher_is_better: bool = False
+    ) -> Measurement:
+        """Record a number for this scenario; it lands in run metrics and run history."""
+        measurement = Measurement(
+            name=name, value=float(value), unit=unit, higher_is_better=higher_is_better
+        )
+        self.measurements = [m for m in self.measurements if m.name != name] + [measurement]
+        return measurement
 
     # ── attachments (TS: this.attach(body, mime)) ───────────────────────────
     @property
