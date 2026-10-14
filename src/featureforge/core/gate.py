@@ -175,7 +175,16 @@ def evaluate(
                 passed=ran > 0 and skipped == 0,
                 measured=f"{ran} ran, {skipped} skipped",
                 limit=">= 1 ran, 0 skipped",
-                detail="no scenarios ran in this tier" if ran == 0 else "scenarios were skipped",
+                detail=(
+                    f"nothing ran in tier {tier.value}"
+                    + (
+                        " (plain pytest tests are unit; `featureforge run` is BDD only)"
+                        if tier is Tier.UNIT
+                        else ""
+                    )
+                    if ran == 0
+                    else "tests were skipped: is this runner missing the hardware?"
+                ),
             )
         )
 

@@ -105,13 +105,18 @@ class RunHistory:
         return None
 
     def flaky_tests(self, window: int = 20) -> list[FlakyTest]:
-        """Tests whose outcome changed between runs of the same build, or passed on rerun."""
+        """Tests whose outcome changed between runs of the same build on the same board, or
+        passed on rerun. Pass on one board and fail on another is hardware, not flakiness."""
         recent = self.runs()[-window:]
         outcomes: dict[str, list[tuple[str, str]]] = defaultdict(list)
         labels: dict[str, str] = {}
         reruns: dict[str, int] = defaultdict(int)
         for run in recent:
-            build = run.manifest.fingerprint if run.manifest else run.run_id
+            build = (
+                f"{run.manifest.fingerprint}@{run.manifest.hardware}"
+                if run.manifest
+                else run.run_id
+            )
             for scenario in run.scenarios:
                 if scenario.outcome == "skipped":
                     continue

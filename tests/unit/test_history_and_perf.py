@@ -149,6 +149,15 @@ def test_flips_on_the_same_build_are_flaky_but_across_builds_are_not(tmp_path):
     assert flaky["a"].flips == 1 and flaky["c"].passed_on_rerun == 1
 
 
+def test_a_flip_between_boards_is_not_flaky(tmp_path):
+    history = RunHistory(tmp_path)
+    for day, board, outcome in ((1, "b1", "passed"), (2, "b2", "failed"), (3, "b1", "passed")):
+        run = _run(f"2026-10-0{day}T00:00:00", {"a": outcome})
+        run.manifest.hardware = board
+        history.archive(run)
+    assert history.flaky_tests() == []
+
+
 def test_history_command_reports_runs_changes_and_flakes(tmp_path, capsys):
     history = RunHistory(tmp_path)
     history.archive(_run("2026-10-01T00:00:00", {"a": "passed"}, compiler="0.9.1"))

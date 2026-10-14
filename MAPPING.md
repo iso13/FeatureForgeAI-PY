@@ -79,3 +79,13 @@ PDF-to-feature, agentic), `enforceDeclarative`, Weaviate RAG, k6 performance,
 axe accessibility, HIPAA/compliance, HiL device simulators, and the remaining
 AI feature files (RAG, AgenticAI, FairnessAndBias). The pack and LLM interfaces
 are in place for each of them.
+
+## Ported from the TypeScript plugins into the quality model
+
+| TypeScript | Python | What changed |
+|---|---|---|
+| `features/HiL/`, `plugins/simulators/device-simulator.ts` | card tiers + `packs/inference/backends.py` (`CardFactory`, `simulated_card`) | A device behind one interface: the same scenario runs on a simulator or a card, and skips with a reason when the runner has no cards |
+| `steps/performance/performance.steps.ts`, `plugins/performance/runPerfTest.ts` (k6, absolute thresholds) | `core/perf.py`, `packs/inference/features/Latency.feature` | Budgets relative to a pinned baseline *and* the last known-good run, instead of fixed numbers |
+| `tools/reporting/archiveCucumberReports.ts` (copies + git metadata) | `core/history.py`, `core/manifest.py`, `featureforge history` | Queryable history with build manifests: last known-good, what changed, flakiness, new failures |
+| `plugins/compliance/regulation-tags.json` (requirement → feature files) | `quality/escapes.toml`, `featureforge gate` | Traceability from a defect to the test that now catches it, enforced at release |
+| `core/intelligence/failureClassifier.ts` (UI / API / business / data) | + `core/intelligence/stack_attribution.py` | A second axis for device and model failures: firmware, compiler, runtime, serving, hardware, test, flaky |
