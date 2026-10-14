@@ -1,0 +1,39 @@
+From 9ba476a5275487d958e31dab7804297fab602f6f Mon Sep 17 00:00:00 2001
+From: David Tran <davidtranbill@gmail.com>
+Date: Tue, 6 Oct 2026 21:02:27 -0500
+Subject: [PATCH] test: resolve the Playwright browser path before pytester
+ changes HOME
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SNFDym5f5ZH2tfZXTXdcEf
+---
+ tests/unit/test_plugin_e2e.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tests/unit/test_plugin_e2e.py b/tests/unit/test_plugin_e2e.py
+index 8552a17..58ab4a6 100644
+--- a/tests/unit/test_plugin_e2e.py
++++ b/tests/unit/test_plugin_e2e.py
+@@ -116,6 +116,10 @@ def _playwright_browsers_path():
+     return str(home / ".cache/ms-playwright")
+ 
+ 
++# Resolved at import time: the pytester fixture redirects HOME before the test runs.
++REAL_BROWSERS_PATH = _playwright_browsers_path()
++
++
+ UI_PYPROJECT = (
+     PYPROJECT.replace('packs = ["ai"]', "packs = []")
+     + """
+@@ -160,7 +164,7 @@ def see_summary(page):
+ 
+ @pytest.mark.skipif(not _browser_available(), reason="no Playwright browser available")
+ def test_ui_failure_traces_symptom_to_api(pytester, monkeypatch):
+-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path())
++    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
+     pytester.makefile(".toml", pyproject=UI_PYPROJECT)
+     pytester.makefile(".feature", dashboard=UI_FEATURE)
+     pytester.makeconftest(UI_STEPS)
+-- 
+2.43.0
+
