@@ -26,6 +26,7 @@ from featureforge.core.settings import Settings
 
 if TYPE_CHECKING:
     from featureforge.core.intelligence.models import DeveloperBrief
+    from featureforge.core.intelligence.stack_attribution import StackAttribution
     from featureforge.core.network import NetworkCapture
     from featureforge.core.telemetry import SpanLike
 
@@ -64,6 +65,7 @@ class ScenarioContext:
     page: Any = None  # playwright.sync_api.Page when a step requested one
     network: NetworkCapture | None = None
     brief: DeveloperBrief | None = None
+    stack: StackAttribution | None = None
     scenario_span: SpanLike | None = None
     step_span: SpanLike | None = None
 

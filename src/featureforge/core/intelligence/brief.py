@@ -189,6 +189,10 @@ def render_console(brief: DeveloperBrief) -> str:
         f"Step:       {brief.gherkin_step}",
         f"Root cause: {brief.root_cause.value} ({round(brief.confidence * 100)}% confidence, "
         f"{brief.classification_method})",
+    ]
+    if brief.stack is not None:
+        lines += brief.stack.render().splitlines()
+    lines += [
         divider,
         "LAYER ANALYSIS",
     ]

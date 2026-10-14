@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from featureforge.core.intelligence.stack_attribution import StackAttribution
+
 
 class FailureLayer(StrEnum):
     UI = "UI"
@@ -87,3 +89,4 @@ class DeveloperBrief(BaseModel):
     compliance_risk: str | None = None
     classification_method: str = "heuristic"
     stack_trace: str | None = None
+    stack: StackAttribution | None = None  # firmware/compiler/runtime/serving/hardware view

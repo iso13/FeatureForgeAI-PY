@@ -25,6 +25,7 @@ from featureforge.core.intelligence.models import (
     LayerValidationReport,
     NetworkRequest,
 )
+from featureforge.core.intelligence.stack_attribution import StackAttribution, attribute_failure
 
 __all__ = [
     "DeveloperBrief",
@@ -34,6 +35,8 @@ __all__ = [
     "LayerValidationReport",
     "NetworkRequest",
     "PageSnapshot",
+    "StackAttribution",
+    "attribute_failure",
     "classify_failure",
     "generate_developer_brief",
     "reconcile_with_layers",

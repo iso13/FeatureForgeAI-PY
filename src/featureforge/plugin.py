@@ -26,6 +26,8 @@ import pytest
 from featureforge.collect import is_selected, load_project_steps, scenario_feature_file
 from featureforge.core.context import ScenarioContext
 from featureforge.core.intelligence import (
+    StackAttribution,
+    attribute_failure,
     classify_failure,
     generate_developer_brief,
     reconcile_with_layers,
@@ -39,6 +41,7 @@ from featureforge.core.intelligence.models import utc_now
 from featureforge.core.llm import LLMClient, build_llm
 from featureforge.core.metrics import RunMetrics, ScenarioResult
 from featureforge.core.settings import Settings, find_pyproject
+from featureforge.core.stack import StackError
 from featureforge.core.telemetry import init_telemetry, shutdown_telemetry, start_span
 from featureforge.core.tiers import Tier, parse_tiers, tier_from_tags
 from featureforge.packs import get_pack
@@ -48,6 +51,10 @@ METRICS_KEY = pytest.StashKey[RunMetrics]()
 SCENARIO_KEY = pytest.StashKey[dict[str, Any]]()
 CTX_KEY = pytest.StashKey[ScenarioContext]()
 TIER_KEY = pytest.StashKey[Tier]()
+ATTEMPT_KEY = pytest.StashKey[int]()
+FIRST_FAILURE_KEY = pytest.StashKey[StackAttribution]()
+# Manifest component -> (last known-good version, this run's version); filled by run history.
+CHANGES_KEY = pytest.StashKey[dict[str, tuple[str, str]]]()
 
 CORE_PLUGINS = ("featureforge.core.browser", "featureforge.core.steps")
 
@@ -79,6 +86,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Only run these tiers: unit, sim, single_card, multi_card, rack (comma/repeat)",
     )
     group.addoption("--ff-schedule", help="Run the tiers of a named schedule (commit, nightly …)")
+    group.addoption(
+        "--ff-reruns",
+        type=int,
+        default=0,
+        help="Rerun a failed test up to N times; a pass on rerun is recorded as FLAKY",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -263,6 +276,17 @@ def pytest_bdd_step_error(
     step_text = context.current_step or str(step.name)
     error_message = f"{type(exception).__name__}: {exception}".strip()
     stack = "".join(traceback.format_exception(exception))
+    if context.page is None or isinstance(exception, StackError):
+        # Stack attribution is for device/model scenarios; browser failures use the UI/API layers.
+        try:
+            context.stack = attribute_failure(
+                exception,
+                error_message,
+                stack,
+                changes=request.config.stash.get(CHANGES_KEY, {}),
+            )
+        except Exception as err:
+            print(f"Stack attribution error: {err!r}")
     try:
         llm: LLMClient = request.getfixturevalue("ff_llm")
         requests_seen = context.network.all() if context.network else []
@@ -274,6 +298,8 @@ def pytest_bdd_step_error(
         )
         classification = reconcile_with_layers(classification, report)
         brief = generate_developer_brief(classification, report, llm)
+        if context.stack is not None:
+            brief = brief.model_copy(update={"stack": context.stack})
         write_brief(brief, context.settings.reports_dir / "intelligence")
         context.brief = brief
         context.attach(render_html(brief), "text/html", "developer_brief")
@@ -358,7 +384,18 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
         result = "failed" if report.when == "call" else "error"
 
     brief = context.brief if context is not None else None
-    item.config.stash[METRICS_KEY].scenarios.append(
+    stack = context.stack if context is not None else None
+    attempt = item.stash.get(ATTEMPT_KEY, 1)
+    first_failure = item.stash.get(FIRST_FAILURE_KEY, None)
+    flaky = result == "passed" and attempt > 1
+    if flaky:
+        stack = attribute_failure(None, passed_on_rerun=True, first_failure=first_failure)
+    elif result in ("failed", "error") and stack is not None and first_failure is None:
+        item.stash[FIRST_FAILURE_KEY] = stack
+    if stack is not None and stack.layer.value == "UNKNOWN" and not stack.candidates:
+        stack = None  # nothing learned; keep the record clean
+    _upsert(
+        item.config.stash[METRICS_KEY],
         ScenarioResult(
             nodeid=item.nodeid,
             feature=info["feature"],
@@ -373,8 +410,49 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
             brief_id=brief.id if brief else None,
             missing_step=info.get("missing_step"),
             measurements=list(context.measurements) if context is not None else [],
-        )
+            stack_layer=stack.layer.value if stack else None,
+            stack_confidence=stack.confidence if stack else None,
+            stack_method=stack.method if stack else None,
+            stack_evidence=list(stack.evidence) if stack else [],
+            attempts=attempt,
+            flaky=flaky,
+        ),
     )
+    if stack is not None and report.failed and brief is None:  # the brief already shows it
+        report.sections.append(("FeatureForge Stack Attribution", stack.render()))
+
+
+def _upsert(metrics: RunMetrics, result: ScenarioResult) -> None:
+    """Add a result, replacing an earlier attempt of the same test (reruns)."""
+    for index, existing in enumerate(metrics.scenarios):
+        if existing.nodeid == result.nodeid:
+            metrics.scenarios[index] = result
+            return
+    metrics.scenarios.append(result)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> bool | None:
+    """``--ff-reruns N``: rerun failures; only the last attempt is reported."""
+    reruns = int(item.config.getoption("--ff-reruns") or 0)
+    if reruns <= 0:
+        return None
+    from _pytest.runner import runtestprotocol
+
+    item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    for attempt in range(1, reruns + 2):
+        item.stash[ATTEMPT_KEY] = attempt
+        reports = runtestprotocol(item, nextitem=nextitem, log=False)
+        if any(r.failed for r in reports) and attempt <= reruns:
+            init_request = getattr(item, "_initrequest", None)
+            if init_request is not None:
+                init_request()  # fresh function-scoped fixtures for the next attempt
+            continue
+        for report in reports:
+            item.ihook.pytest_runtest_logreport(report=report)
+        break
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    return True
 
 
 def _callspec_id(item: pytest.Item) -> str:
