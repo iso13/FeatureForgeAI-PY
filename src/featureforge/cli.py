@@ -7,6 +7,8 @@ featureforge metrics   → (new) summarize reports/run-metrics.json
 featureforge packs     → (new) list installed packs
 featureforge plan      → (new) scenarios per tier, and what each schedule runs
 featureforge history   → (new) recent runs, what changed, and flaky tests
+featureforge gate      → (new) PASS/BLOCK a release on measurable criteria
+featureforge escapes   → (new) post-release defects and their regression tests
 """
 
 from __future__ import annotations
@@ -203,6 +205,44 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gate(args: argparse.Namespace) -> int:
+    from featureforge.core.escapes import EscapeLog
+    from featureforge.core.gate import evaluate
+    from featureforge.core.history import RunHistory
+    from featureforge.core.metrics import RunMetrics
+
+    settings = _settings()
+    path = Path(args.metrics) if args.metrics else settings.reports_dir / "run-metrics.json"
+    if not path.is_file():
+        print(f"No metrics at {path}; run `featureforge run` first.", file=sys.stderr)
+        return 2
+    try:
+        policy = settings.gate_policy(args.policy)
+    except KeyError as err:
+        print(err.args[0], file=sys.stderr)
+        return 2
+    result = evaluate(
+        args.policy,
+        policy,
+        RunMetrics.read(path),
+        RunHistory(settings.history_dir),
+        EscapeLog.load(settings.escapes_file, root=settings.project_root),
+    )
+    print(result.render())
+    out = result.write(settings.reports_dir / f"gate-{args.policy}.json")
+    print(f"Gate report: {out}")
+    return 0 if result.passed else 1
+
+
+def cmd_escapes(_: argparse.Namespace) -> int:
+    from featureforge.core.escapes import EscapeLog
+
+    settings = _settings()
+    log = EscapeLog.load(settings.escapes_file, root=settings.project_root)
+    print(log.render())
+    return 0
+
+
 def _default_feature_dirs() -> list[Path]:
     """The enabled packs' features plus the project's ``features/`` folder."""
     from featureforge.collect import feature_paths
@@ -247,6 +287,12 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--last", type=int, default=10)
     history.add_argument("--window", type=int, default=20, help="Runs to scan for flakiness")
     history.add_argument("--dir", help="History folder (default: history_dir setting)")
+
+    gate = sub.add_parser("gate", help="PASS/BLOCK on the last run (exit code 1 = BLOCK)")
+    gate.add_argument("--policy", default="commit", help="Gate name: commit, nightly, release …")
+    gate.add_argument("--metrics", help="run-metrics.json to judge (default: the last run)")
+
+    sub.add_parser("escapes", help="Post-release defects and whether each has a test")
     return parser
 
 
@@ -266,6 +312,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "packs": cmd_packs,
         "plan": cmd_plan,
         "history": cmd_history,
+        "gate": cmd_gate,
+        "escapes": cmd_escapes,
     }
     return handlers[args.command](args)
 

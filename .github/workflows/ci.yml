@@ -32,8 +32,8 @@ jobs:
           HEADLESS: "true"
         run: |
           mkdir -p reports/cucumber reports/junit
-          pytest --junitxml=reports/junit/junit.xml --cucumberjson=reports/cucumber/cucumber_report.json
-          featureforge metrics
+          pytest --ff-schedule commit --junitxml=reports/junit/junit.xml --cucumberjson=reports/cucumber/cucumber_report.json
+          featureforge gate --policy commit
       - uses: actions/upload-artifact@v4
         if: always()
         with:

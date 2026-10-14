@@ -1,0 +1,31 @@
+# Escape log: defects found after release, and the test that now catches each.
+# Every escape is a missing test. `featureforge escapes` summarizes this file and
+# the release gate blocks while any escape has no regression test.
+# The entries below are illustrative examples; replace them with real ones.
+
+[[escape]]
+id = "ESC-001"
+title = "int8 logits scaled ~2% high after a compiler change; perplexity looked better"
+found = 2026-09-12
+severity = "high"
+layer = "COMPILER"
+should_have_caught = "sim"
+regression_test = "src/featureforge/packs/inference/features/NumericalAccuracy.feature"
+
+[[escape]]
+id = "ESC-002"
+title = "One card in a 4-card node returned different tokens"
+found = 2026-09-28
+severity = "critical"
+layer = "HARDWARE"
+should_have_caught = "multi_card"
+regression_test = "src/featureforge/packs/inference/features/CardQualification.feature"
+
+[[escape]]
+id = "ESC-003"
+title = "TTFT p99 up 18% under mixed prompt lengths after a runtime update"
+found = 2026-10-06
+severity = "medium"
+layer = "RUNTIME"
+should_have_caught = "single_card"
+regression_test = ""

@@ -119,13 +119,16 @@ def test_unavailable_tiers_skip_with_the_reason(project):
     result.assert_outcomes(passed=2, skipped=3)
     result.stdout.fnmatch_lines(["*needs tier 'rack'; this runner provides: unit, sim*"])
     metrics = json.loads((project.path / "reports/run-metrics.json").read_text())
-    tiers = {s["scenario"]: (s["tier"], s["outcome"]) for s in metrics["scenarios"]}
+    tiers = {s["scenario"]: (s["kind"], s["tier"], s["outcome"]) for s in metrics["scenarios"]}
     assert tiers == {
-        "Untagged runs in the default tier": ("sim", "passed"),
-        "Needs one card": ("single_card", "skipped"),
-        "Needs a rack": ("rack", "skipped"),
+        "Untagged runs in the default tier": ("scenario", "sim", "passed"),
+        "Needs one card": ("scenario", "single_card", "skipped"),
+        "Needs a rack": ("scenario", "rack", "skipped"),
+        "test_plain_unit": ("test", "unit", "passed"),
+        "test_plain_multi_card": ("test", "multi_card", "skipped"),
     }
     assert metrics["summary"]["by_tier"]["rack"] == {"skipped": 1}
+    result.stdout.fnmatch_lines(["*Scenarios: 3 + 2 tests  passed 2*"])
 
 
 def test_ff_tier_selects_plain_tests_and_scenarios(project):

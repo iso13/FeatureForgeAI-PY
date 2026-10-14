@@ -37,6 +37,7 @@ class Measurement(BaseModel):
 
 class ScenarioResult(BaseModel):
     nodeid: str
+    kind: str = "scenario"  # "scenario" (Gherkin) | "test" (plain pytest)
     feature: str
     scenario: str
     example: str = ""  # Examples row id for outline scenarios
@@ -159,8 +160,11 @@ class RunMetrics(BaseModel):
     def render(self) -> str:
         c = self.counts
         rate = "n/a" if self.pass_rate is None else f"{self.pass_rate:.1%}"
+        scenarios = sum(r.kind == "scenario" for r in self.scenarios)
+        tests = len(self.scenarios) - scenarios
+        label = f"Scenarios: {scenarios}" + (f" + {tests} tests" if tests else "")
         lines = [
-            f"Scenarios: {len(self.scenarios)}  passed {c['passed']}  failed {c['failed']}  "
+            f"{label}  passed {c['passed']}  failed {c['failed']}  "
             f"error {c['error']}  skipped {c['skipped']}  pass rate {rate}",
         ]
         if any(r.tier for r in self.scenarios):

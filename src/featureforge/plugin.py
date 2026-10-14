@@ -380,12 +380,25 @@ def _info_from_item(item: pytest.Item) -> dict[str, Any] | None:
     }
 
 
+def _plain_test_info(item: pytest.Item) -> dict[str, Any]:
+    """A plain pytest test, recorded so unit-tier results reach metrics and gates."""
+    return {
+        "kind": "test",
+        "feature": item.nodeid.split("::")[0],
+        "scenario": item.name,
+        "tags": sorted({m.name for m in item.iter_markers()}),
+        "started": time.perf_counter(),
+    }
+
+
 def _record(item: pytest.Item, report: pytest.TestReport) -> None:
     info = item.stash.get(SCENARIO_KEY, None)
-    if info is None and report.skipped:
+    if info is None and not report.passed:  # skipped or broken before the scenario started
         info = _info_from_item(item)
     if info is None:
-        return  # not a BDD scenario
+        if scenario_feature_file(item) is not None:
+            return  # a scenario still setting up; recorded once it reports
+        info = item.stash.setdefault(SCENARIO_KEY, _plain_test_info(item))
 
     context = item.stash.get(CTX_KEY, None)
     if context is not None and context.brief is not None and report.failed:
@@ -424,6 +437,7 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
         item.config.stash[METRICS_KEY],
         ScenarioResult(
             nodeid=item.nodeid,
+            kind=info.get("kind", "scenario"),
             feature=info["feature"],
             scenario=info["scenario"],
             example=context.variant if context is not None else _callspec_id(item),

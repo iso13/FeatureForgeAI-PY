@@ -80,6 +80,11 @@ class Settings(BaseModel):
     manifest: dict[str, Any] = Field(default_factory=dict)  # static [tool.featureforge.manifest]
     manifest_file: Path | None = None  # JSON written by the build (FF_MANIFEST)
     perf_baselines: Path | None = None  # pinned perf numbers; None = the pack's baselines.toml
+
+    # Release gates & escapes
+    gates: dict[str, dict[str, Any]] = Field(default_factory=dict)  # [tool.featureforge.gates.*]
+    escapes_file: Path = Path("quality/escapes.toml")
+    project_root: Path = Path(".")
     lint: LintSettings = Field(default_factory=LintSettings)
 
     @field_validator("env")
@@ -94,6 +99,16 @@ class Settings(BaseModel):
         except KeyError:
             known = ", ".join(sorted(self.environments))
             raise ValueError(f"Unknown environment '{self.env}'. Known: {known}") from None
+
+    def gate_policy(self, name: str) -> Any:
+        """The named release gate: built-in defaults overlaid with [tool.featureforge.gates]."""
+        from featureforge.core.gate import DEFAULT_GATES, GatePolicy
+
+        if name not in DEFAULT_GATES and name not in self.gates:
+            known = ", ".join(sorted({*DEFAULT_GATES, *self.gates}))
+            raise KeyError(f"Unknown gate '{name}'. Known: {known}")
+        base = DEFAULT_GATES.get(name, GatePolicy()).model_dump()
+        return GatePolicy.model_validate({**base, **self.gates.get(name, {})})
 
     @property
     def resolved_llm_model(self) -> str:
@@ -145,6 +160,10 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
     data = dict(section)
     for key in ("reports_dir", "features_dir", "steps_dir"):
         data[key] = (path.parent / str(data.get(key, key.removesuffix("_dir")))).resolve()
+    data["project_root"] = path.parent.resolve()
+    data["escapes_file"] = (
+        path.parent / str(data.get("escapes_file", "quality/escapes.toml"))
+    ).resolve()
     for key in ("tolerance_policy", "manifest_file", "history_dir", "perf_baselines"):
         if key in data:
             data[key] = (path.parent / str(data[key])).resolve()
