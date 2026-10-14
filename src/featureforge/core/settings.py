@@ -100,6 +100,17 @@ class Settings(BaseModel):
             known = ", ".join(sorted(self.environments))
             raise ValueError(f"Unknown environment '{self.env}'. Known: {known}") from None
 
+    def relative_to(self, root: Path) -> Settings:
+        """Resolve every relative path setting against ``root`` (the project root), so the
+        CLI and the pytest plugin agree no matter which folder they're started from."""
+        base = root.resolve()
+        update: dict[str, Any] = {"project_root": base}
+        for key in PATH_FIELDS:
+            value = getattr(self, key)
+            if value is not None and not value.is_absolute():
+                update[key] = (base / value).resolve()
+        return self.model_copy(update=update)
+
     def gate_policy(self, name: str) -> Any:
         """The named release gate: built-in defaults overlaid with [tool.featureforge.gates]."""
         from featureforge.core.gate import DEFAULT_GATES, GatePolicy
@@ -133,6 +144,8 @@ class Settings(BaseModel):
             data["tiers"] = {**data.get("tiers", {}), "available": env["FF_TIERS_AVAILABLE"]}
         data.update({k: v for k, v in (overrides or {}).items() if v is not None})
         settings = cls.model_validate(data)
+        if pyproject is not None and pyproject.is_file():
+            settings = settings.relative_to(pyproject.parent)
         if (
             settings.llm_provider == "none"
             and settings.openai_api_key
@@ -141,6 +154,18 @@ class Settings(BaseModel):
             # Same behaviour as the TS engine: a key in the environment turns OpenAI on.
             settings = settings.model_copy(update={"llm_provider": "openai"})
         return settings
+
+
+PATH_FIELDS = (
+    "reports_dir",
+    "features_dir",
+    "steps_dir",
+    "history_dir",
+    "escapes_file",
+    "tolerance_policy",
+    "manifest_file",
+    "perf_baselines",
+)
 
 
 def find_pyproject(start: Path) -> Path | None:
@@ -157,17 +182,7 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
     section = raw.get("tool", {}).get("featureforge", {})
     if not isinstance(section, dict):
         return {}
-    data = dict(section)
-    for key in ("reports_dir", "features_dir", "steps_dir"):
-        data[key] = (path.parent / str(data.get(key, key.removesuffix("_dir")))).resolve()
-    data["project_root"] = path.parent.resolve()
-    data["escapes_file"] = (
-        path.parent / str(data.get("escapes_file", "quality/escapes.toml"))
-    ).resolve()
-    for key in ("tolerance_policy", "manifest_file", "history_dir", "perf_baselines"):
-        if key in data:
-            data[key] = (path.parent / str(data[key])).resolve()
-    return data
+    return dict(section)  # paths are resolved against the project root in Settings.load
 
 
 def _from_environ(environ: Mapping[str, str]) -> dict[str, Any]:

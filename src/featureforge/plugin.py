@@ -15,6 +15,7 @@ World                → the ``ctx`` fixture (ScenarioContext)
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import traceback
@@ -110,20 +111,16 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("--ff-headed"):
         overrides["headless"] = False
     settings = Settings.load(find_pyproject(config.rootpath), overrides=overrides)
-    relative = {
-        key: (config.rootpath / getattr(settings, key)).resolve()
-        for key in ("reports_dir", "features_dir", "steps_dir", "history_dir")
-        if not getattr(settings, key).is_absolute()
-    }
-    if relative:
-        settings = settings.model_copy(update=relative)
+    if not settings.reports_dir.is_absolute():  # no pyproject.toml: anchor at the rootdir
+        settings = settings.relative_to(config.rootpath)
     config.stash[SETTINGS_KEY] = settings
     manifest = BuildManifest.collect(
         settings.manifest, settings.manifest_file, os.environ, cwd=config.rootpath
     )
     history = RunHistory(settings.history_dir, keep=settings.history_keep)
     config.stash[HISTORY_KEY] = history
-    good = history.last_known_good()
+    scope = run_scope(config)
+    good = history.last_known_good(scope=scope) or history.last_known_good()
     config.stash[CHANGES_KEY] = (
         manifest.changes_since(good.manifest) if good is not None and good.manifest else {}
     )
@@ -131,6 +128,7 @@ def pytest_configure(config: pytest.Config) -> None:
         environment=settings.env,
         manifest=manifest,
         schedule=config.getoption("--ff-schedule"),
+        scope=scope,
     )
     init_telemetry(settings)
 
@@ -141,6 +139,34 @@ def pytest_configure(config: pytest.Config) -> None:
     load_project_steps(config.pluginmanager, settings.steps_dir)
     for tier in Tier:
         config.addinivalue_line("markers", f"{tier.marker}: test tier '{tier.value}'")
+
+
+def run_scope(config: pytest.Config) -> str:
+    """A stable description of which tests this run selected."""
+    root = config.rootpath
+    args = []
+    for arg in config.args:
+        path = Path(arg.split("::")[0])
+        try:
+            args.append(str((root / path).resolve().relative_to(root)) + arg[len(str(path)) :])
+        except ValueError:
+            args.append(arg)
+    tiers = selected_tiers(config)
+    features = sorted(
+        str(Path(p).resolve().relative_to(root)) if Path(p).resolve().is_relative_to(root) else p
+        for p in config.getoption("--ff-feature")
+    )
+    return json.dumps(
+        {
+            "args": sorted(args),
+            "markers": config.getoption("markexpr", "") or "",
+            "keywords": config.getoption("keyword", "") or "",
+            "tiers": sorted(t.value for t in tiers) if tiers else "all",
+            "features": features,
+            "packs": sorted(config.stash[SETTINGS_KEY].packs),
+        },
+        sort_keys=True,
+    )
 
 
 def selected_tiers(config: pytest.Config) -> list[Tier] | None:
@@ -392,6 +418,10 @@ def _plain_test_info(item: pytest.Item) -> dict[str, Any]:
 
 
 def _record(item: pytest.Item, report: pytest.TestReport) -> None:
+    if report.when == "teardown":
+        if report.failed:
+            _mark_error(item, "teardown failed")
+        return
     info = item.stash.get(SCENARIO_KEY, None)
     if info is None and not report.passed:  # skipped or broken before the scenario started
         info = _info_from_item(item)
@@ -462,6 +492,30 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
         report.sections.append(("FeatureForge Stack Attribution", stack.render()))
 
 
+def _mark_error(item: pytest.Item, reason: str) -> None:
+    """A test that passed its call but broke afterwards (e.g. in teardown) is an error."""
+    metrics = item.config.stash[METRICS_KEY]
+    for index, existing in enumerate(metrics.scenarios):
+        if existing.nodeid == item.nodeid:
+            metrics.scenarios[index] = existing.model_copy(
+                update={"outcome": "error", "flaky": False, "missing_step": None}
+            )
+            return
+    info = _info_from_item(item) or _plain_test_info(item)
+    metrics.scenarios.append(
+        ScenarioResult(
+            nodeid=item.nodeid,
+            kind=info.get("kind", "scenario"),
+            feature=info["feature"],
+            scenario=info["scenario"],
+            tags=info["tags"],
+            outcome="error",
+            tier=item.stash[TIER_KEY].value if TIER_KEY in item.stash else None,
+            stack_evidence=[reason],
+        )
+    )
+
+
 def _upsert(metrics: RunMetrics, result: ScenarioResult) -> None:
     """Add a result, replacing an earlier attempt of the same test (reruns)."""
     for index, existing in enumerate(metrics.scenarios):
@@ -480,9 +534,12 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
     from _pytest.runner import runtestprotocol
 
     item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    # Tear down only this test's own fixtures between attempts: module/session fixtures
+    # (a device handle, a server) stay up, so a pass on rerun really is "same state".
+    keep_parent: Any = item.parent
     for attempt in range(1, reruns + 2):
         item.stash[ATTEMPT_KEY] = attempt
-        reports = runtestprotocol(item, nextitem=nextitem, log=False)
+        reports = runtestprotocol(item, nextitem=keep_parent, log=False)
         if any(r.failed for r in reports) and attempt <= reruns:
             init_request = getattr(item, "_initrequest", None)
             if init_request is not None:
@@ -491,6 +548,11 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
         for report in reports:
             item.ihook.pytest_runtest_logreport(report=report)
         break
+    try:  # now the broader teardown pytest would normally have done after this test
+        item.session._setupstate.teardown_exact(nextitem)
+    except Exception as err:
+        report = pytest.TestReport(item.nodeid, item.location, {}, "failed", repr(err), "teardown")
+        item.ihook.pytest_runtest_logreport(report=report)
     item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
     return True
 
@@ -515,14 +577,34 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pyte
     terminalreporter.write_line(f"Metrics: {settings.reports_dir / 'run-metrics.json'}")
 
 
+WORKER_OUTPUT = "featureforge_metrics"
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: Any) -> None:
+    """pytest-xdist controller: collect each worker's results into this run's metrics."""
+    payload = getattr(node, "workeroutput", {}).get(WORKER_OUTPUT)
+    metrics = node.config.stash.get(METRICS_KEY, None)
+    if not payload or metrics is None:
+        return
+    worker = RunMetrics.model_validate_json(payload)
+    metrics.scenarios.extend(worker.scenarios)
+    metrics.tiers = metrics.tiers or worker.tiers
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     config = session.config
     metrics = config.stash.get(METRICS_KEY, None)
+    workeroutput = getattr(config, "workeroutput", None)
+    if workeroutput is not None:  # xdist worker: hand results to the controller
+        if metrics is not None:
+            workeroutput[WORKER_OUTPUT] = metrics.model_dump_json()
+        shutdown_telemetry()
+        return
     if metrics is not None and metrics.scenarios:
         metrics.finished_at = utc_now()
         metrics.write(config.stash[SETTINGS_KEY].reports_dir / "run-metrics.json")
         history = config.stash.get(HISTORY_KEY, None)
-        worker = os.environ.get("PYTEST_XDIST_WORKER")  # workers report to the controller
-        if history is not None and not worker and not config.getoption("--ff-no-history"):
+        if history is not None and not config.getoption("--ff-no-history"):
             history.archive(metrics)
     shutdown_telemetry()

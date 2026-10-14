@@ -19,12 +19,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_POLICY_PATH = Path(__file__).parent / "tolerances.toml"
 
 
 class ToleranceRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # a typo must not silently drop a check
+
     """Limits for one model/precision pair. Element checks follow ``numpy.allclose``."""
 
     rtol: float = Field(default=1e-5, ge=0, description="relative tolerance per element")

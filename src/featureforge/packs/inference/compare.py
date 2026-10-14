@@ -20,6 +20,7 @@ Matrix = Sequence[Sequence[float]]
 class ComparisonStats(BaseModel):
     elements: int
     positions: int
+    non_finite: int = 0  # NaN/inf elements in the candidate: always a violation
     max_abs_err: float
     max_rel_err: float
     mismatch_fraction: float
@@ -99,7 +100,7 @@ def compute_stats(reference: Matrix, candidate: Matrix, rule: ToleranceRule) -> 
     if len(reference) != len(candidate) or not reference:
         raise ValueError(f"shape mismatch: {len(reference)} vs {len(candidate)} positions")
     max_abs = max_rel = 0.0
-    mismatches = elements = 0
+    mismatches = elements = non_finite = 0
     dot = norm_r = norm_c = 0.0
     top1 = 0
     overlap = 0.0
@@ -107,6 +108,11 @@ def compute_stats(reference: Matrix, candidate: Matrix, rule: ToleranceRule) -> 
         if len(ref_row) != len(cand_row):
             raise ValueError(f"vocabulary mismatch: {len(ref_row)} vs {len(cand_row)}")
         for r, c in zip(ref_row, cand_row, strict=True):
+            elements += 1
+            if not math.isfinite(c):
+                non_finite += 1
+                mismatches += 1
+                continue
             err = abs(c - r)
             max_abs = max(max_abs, err)
             max_rel = max(max_rel, err / max(abs(r), 1e-12))
@@ -114,13 +120,14 @@ def compute_stats(reference: Matrix, candidate: Matrix, rule: ToleranceRule) -> 
             dot += r * c
             norm_r += r * r
             norm_c += c * c
-            elements += 1
         top1 += _argmax(ref_row) == _argmax(cand_row)
         overlap += len(_topk(ref_row, rule.topk) & _topk(cand_row, rule.topk)) / rule.topk
     targets = [_argmax(row) for row in reference]  # the reference's own greedy tokens
+    finite_rows = [[c if math.isfinite(c) else 0.0 for c in row] for row in candidate]
     return ComparisonStats(
         elements=elements,
         positions=len(reference),
+        non_finite=non_finite,
         max_abs_err=max_abs,
         max_rel_err=max_rel,
         mismatch_fraction=mismatches / elements,
@@ -128,31 +135,33 @@ def compute_stats(reference: Matrix, candidate: Matrix, rule: ToleranceRule) -> 
         top1_agreement=top1 / len(reference),
         topk_overlap=overlap / len(reference),
         perplexity_ref=perplexity(reference, targets),
-        perplexity_candidate=perplexity(candidate, targets),
+        perplexity_candidate=perplexity(finite_rows, targets) if not non_finite else math.nan,
     )
 
 
 def check(stats: ComparisonStats, rule: ToleranceRule) -> list[Violation]:
     found: list[Violation] = []
 
+    # Written as `not (actual <= limit)` so NaN fails instead of slipping through.
     def at_most(metric: str, actual: float, limit: float) -> None:
-        if actual > limit:
+        if not actual <= limit:
             found.append(
                 Violation(metric=metric, actual=actual, limit=limit, rule=f"{metric} <= {limit:g}")
             )
 
     def at_least(metric: str, actual: float, limit: float) -> None:
-        if actual < limit:
+        if not actual >= limit:
             found.append(
                 Violation(metric=metric, actual=actual, limit=limit, rule=f"{metric} >= {limit:g}")
             )
 
+    at_most("non_finite", stats.non_finite, 0)
     at_most("mismatch_fraction", stats.mismatch_fraction, rule.max_mismatch_fraction)
     at_least("cosine", stats.cosine, rule.min_cosine)
     at_least("top1_agreement", stats.top1_agreement, rule.min_top1_agreement)
     at_least("topk_overlap", stats.topk_overlap, rule.min_topk_overlap)
     limit = rule.max_perplexity_delta_pct
-    if limit is not None and abs(stats.perplexity_delta_pct) > limit:
+    if limit is not None and not abs(stats.perplexity_delta_pct) <= limit:
         # Two-sided: drifting "better" than the reference is still drifting (e.g. a
         # scale error makes the model overconfident and lowers perplexity).
         found.append(
@@ -206,6 +215,7 @@ def merge(results: Sequence[ComparisonResult]) -> ComparisonResult:
     stats = ComparisonStats(
         elements=sum(r.stats.elements for r in results),
         positions=positions,
+        non_finite=sum(r.stats.non_finite for r in results),
         max_abs_err=max(r.stats.max_abs_err for r in results),
         max_rel_err=max(r.stats.max_rel_err for r in results),
         mismatch_fraction=sum(r.stats.mismatch_fraction * r.stats.elements for r in results)

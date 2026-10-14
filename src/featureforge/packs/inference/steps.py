@@ -298,9 +298,11 @@ def first_divergence(runs: list[Generation]) -> tuple[int, int] | None:
     """(run index, token position) of the first difference from run 0, if any."""
     baseline = runs[0].tokens
     for index, run in enumerate(runs[1:], start=1):
-        for position, (a, b) in enumerate(zip(baseline, run.tokens, strict=True)):
+        for position, (a, b) in enumerate(zip(baseline, run.tokens, strict=False)):
             if a != b:
                 return index, position
+        if len(run.tokens) != len(baseline):
+            return index, min(len(run.tokens), len(baseline))
     return None
 
 
@@ -328,9 +330,11 @@ def each_card_generates(ctx: ScenarioContext, tokens: int) -> None:
 
 
 def odd_cards_out(runs: dict[int, Generation]) -> list[int]:
-    """Cards whose tokens differ from the most common output across cards."""
+    """Cards whose tokens differ from the majority output; all cards if there's no majority."""
     outputs = [tuple(run.tokens) for run in runs.values()]
     majority = max(set(outputs), key=outputs.count)
+    if outputs.count(majority) * 2 <= len(outputs) and len(set(outputs)) > 1:
+        return list(runs)  # e.g. 2 vs 2: can't tell which board is bad
     return [card for card, run in runs.items() if tuple(run.tokens) != majority]
 
 

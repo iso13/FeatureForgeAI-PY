@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Tier(StrEnum):
@@ -58,6 +58,8 @@ DEFAULT_SCHEDULES: dict[str, list[Tier]] = {
 
 
 class TierSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # a typo must not silently drop a check
+
     default: Tier = Tier.SIM
     available: list[Tier] = Field(default_factory=lambda: [Tier.UNIT, Tier.SIM])
     schedules: dict[str, list[Tier]] = Field(

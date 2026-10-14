@@ -71,10 +71,18 @@ class RunHistory:
         return sorted(loaded, key=lambda r: r.started_at)
 
     # ── queries ─────────────────────────────────────────────────────────────
-    def last_known_good(self, before: str | None = None) -> RunMetrics | None:
-        """Newest run that executed something and had no failures or errors."""
+    def last_known_good(
+        self, before: str | None = None, scope: str | None = None
+    ) -> RunMetrics | None:
+        """Newest run that executed something and had no failures or errors.
+
+        With ``scope``, only runs that selected the same tests count: a green run of
+        one feature folder says nothing about the rest of the suite.
+        """
         for run in reversed(self.runs()):
             if before is not None and run.started_at >= before:
+                continue
+            if scope is not None and run.scope != scope:
                 continue
             counts = run.counts
             if run.executed and counts["failed"] == 0 and counts["error"] == 0:
@@ -118,8 +126,8 @@ class RunHistory:
         return sorted(found, key=lambda f: f.score, reverse=True)
 
     def newly_failing(self, current: RunMetrics) -> list[str]:
-        """Labels of tests failing now that passed in the last known-good run."""
-        good = self.last_known_good(before=current.started_at)
+        """Labels of tests failing now that passed in the last known-good run of the same scope."""
+        good = self.last_known_good(before=current.started_at, scope=current.scope)
         if good is None:
             return []
         passed_before = {s.nodeid for s in good.scenarios if s.outcome == "passed"}

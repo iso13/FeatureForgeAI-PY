@@ -70,6 +70,8 @@ class RunMetrics(BaseModel):
     manifest: BuildManifest | None = None
     schedule: str | None = None
     tiers: list[str] = Field(default_factory=list)  # tiers selected for this run (empty: all)
+    # Which tests were selected (args, -m, tiers, features). Same scope = comparable runs.
+    scope: str = ""
     scenarios: list[ScenarioResult] = Field(default_factory=list)
 
     @property
@@ -162,7 +164,10 @@ class RunMetrics(BaseModel):
         rate = "n/a" if self.pass_rate is None else f"{self.pass_rate:.1%}"
         scenarios = sum(r.kind == "scenario" for r in self.scenarios)
         tests = len(self.scenarios) - scenarios
-        label = f"Scenarios: {scenarios}" + (f" + {tests} tests" if tests else "")
+        if scenarios and tests:
+            label = f"Scenarios: {scenarios} + {tests} tests"
+        else:
+            label = f"Scenarios: {scenarios}" if scenarios else f"Tests: {tests}"
         lines = [
             f"{label}  passed {c['passed']}  failed {c['failed']}  "
             f"error {c['error']}  skipped {c['skipped']}  pass rate {rate}",

@@ -26,7 +26,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from featureforge.core.escapes import EscapeLog
 from featureforge.core.history import RunHistory
@@ -35,6 +35,8 @@ from featureforge.core.tiers import Tier
 
 
 class Quarantine(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # a typo must not silently drop a check
+
     match: str  # substring of the scenario label or node id
     ticket: str
     expires: date
@@ -44,6 +46,8 @@ class Quarantine(BaseModel):
 
 
 class GatePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # a typo must not silently drop a check
+
     min_pass_rate: float = 1.0
     required_tiers: list[Tier] = Field(default_factory=list)  # each must run, none skipped
     max_new_failures: int | None = 0  # failing now, passed in the last known-good run
