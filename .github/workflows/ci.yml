@@ -23,8 +23,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Static checks
         run: |
-          ruff check src tests
-          ruff format --check src tests
+          ruff check src tests steps
+          ruff format --check src tests steps
           mypy
           featureforge lint
       - name: Unit + BDD

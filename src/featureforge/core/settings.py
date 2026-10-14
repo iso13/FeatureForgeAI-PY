@@ -66,6 +66,8 @@ class Settings(BaseModel):
     # Framework
     packs: list[str] = Field(default_factory=lambda: ["ai"])
     reports_dir: Path = Path("reports")
+    features_dir: Path = Path("features")  # the project's own feature files
+    steps_dir: Path = Path("steps")  # the project's own step definitions
     lint: LintSettings = Field(default_factory=LintSettings)
 
     @field_validator("env")
@@ -126,8 +128,8 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
     if not isinstance(section, dict):
         return {}
     data = dict(section)
-    if "reports_dir" in data:
-        data["reports_dir"] = (path.parent / str(data["reports_dir"])).resolve()
+    for key in ("reports_dir", "features_dir", "steps_dir"):
+        data[key] = (path.parent / str(data.get(key, key.removesuffix("_dir")))).resolve()
     return data
 
 

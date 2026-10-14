@@ -1,6 +1,6 @@
 """``featureforge`` command line. TS equivalent: the npm scripts in package.json.
 
-featureforge run       → npm run cucumber[:dev|:staging]
+featureforge run       → npm run cucumber[:dev|:staging]; `run features/compiler` runs one folder
 featureforge lint      → npm run lint:gherkin
 featureforge scaffold  → npm run scaffold:steps
 featureforge metrics   → (new) summarize reports/run-metrics.json
@@ -50,6 +50,11 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
         pytest_args.append(f"--ff-reports-dir={args.reports_dir}")
     for pack in args.pack or []:
         pytest_args.append(f"--ff-pack={pack}")
+    for feature in args.features:
+        if not Path(feature).exists():
+            print(f"No such feature file or folder: {feature}", file=sys.stderr)
+            return 4
+        pytest_args.append(f"--ff-feature={feature}")
     if args.parallel and args.parallel > 1:
         pytest_args += ["-n", str(args.parallel)]  # requires pytest-xdist
     targets = [arg for arg in extra if Path(arg.split("::")[0]).exists()]
@@ -61,7 +66,7 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
 def cmd_lint(args: argparse.Namespace) -> int:
     from featureforge.tools.lint import lint_paths
 
-    paths = [Path(p) for p in args.paths] or [_default_features_dir()]
+    paths = [Path(p) for p in args.paths] or _default_feature_dirs()
     issues = lint_paths(paths, _settings().lint)
     root = Path.cwd()
     for issue in issues:
@@ -76,7 +81,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
 def cmd_scaffold(args: argparse.Namespace) -> int:
     from featureforge.tools.scaffold import scaffold
 
-    steps = [Path(p) for p in args.steps] or [Path("src"), Path("tests")]
+    steps = [Path(p) for p in args.steps] or [Path("src"), Path("tests"), _settings().steps_dir]
     missing, source = scaffold([Path(p) for p in args.features], steps)
     if not missing:
         print("Every step already has a definition.")
@@ -116,11 +121,11 @@ def cmd_packs(_: argparse.Namespace) -> int:
     return 0
 
 
-def _default_features_dir() -> Path:
-    from featureforge.packs import discover_packs
+def _default_feature_dirs() -> list[Path]:
+    """The enabled packs' features plus the project's ``features/`` folder."""
+    from featureforge.collect import feature_paths
 
-    packs = discover_packs()
-    return packs["ai"].features_dir if "ai" in packs else Path.cwd()
+    return [Path(p) for p in feature_paths(_settings())]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run BDD scenarios (extra args after -- go to pytest)")
+    run.add_argument("features", nargs="*", help="Feature files or folders to run (default: all)")
     run.add_argument("--tags", default=DEFAULT_TAGS, help="Cucumber-style tag expression")
     run.add_argument("--env", help="Environment key from [tool.featureforge.environments]")
     run.add_argument("--headed", action="store_true")

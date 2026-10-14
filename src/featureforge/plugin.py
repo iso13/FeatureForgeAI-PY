@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from featureforge.collect import is_selected, load_project_steps, scenario_feature_file
 from featureforge.core.context import ScenarioContext
 from featureforge.core.intelligence import (
     classify_failure,
@@ -63,6 +64,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption("--ff-headed", action="store_true", help="Run the browser headed")
     group.addoption("--ff-pack", action="append", help="Enable a pack (repeatable)")
     group.addoption("--ff-reports-dir", help="Where reports, briefs and metrics go")
+    group.addoption(
+        "--ff-feature",
+        action="append",
+        default=[],
+        help="Only run scenarios from this .feature file or folder (repeatable)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -74,10 +81,13 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("--ff-headed"):
         overrides["headless"] = False
     settings = Settings.load(find_pyproject(config.rootpath), overrides=overrides)
-    if not settings.reports_dir.is_absolute():
-        settings = settings.model_copy(
-            update={"reports_dir": (config.rootpath / settings.reports_dir).resolve()}
-        )
+    relative = {
+        key: (config.rootpath / getattr(settings, key)).resolve()
+        for key in ("reports_dir", "features_dir", "steps_dir")
+        if not getattr(settings, key).is_absolute()
+    }
+    if relative:
+        settings = settings.model_copy(update=relative)
     config.stash[SETTINGS_KEY] = settings
     config.stash[METRICS_KEY] = RunMetrics(environment=settings.env)
     init_telemetry(settings)
@@ -86,6 +96,23 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.import_plugin(module)
     for name in settings.packs:
         config.pluginmanager.import_plugin(get_pack(name).plugin)
+    load_project_steps(config.pluginmanager, settings.steps_dir)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """``--ff-feature``: keep only scenarios from the selected feature files/folders."""
+    selections = [Path(p).resolve() for p in config.getoption("--ff-feature")]
+    if not selections:
+        return
+    keep: list[pytest.Item] = []
+    dropped: list[pytest.Item] = []
+    for item in items:
+        feature_file = scenario_feature_file(item)
+        selected = feature_file is not None and is_selected(feature_file, selections)
+        (keep if selected else dropped).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = keep
 
 
 def pytest_bdd_apply_tag(tag: str, function: Any) -> bool:

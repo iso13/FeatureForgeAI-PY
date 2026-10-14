@@ -25,8 +25,8 @@ lint-and-types:
   stage: static
   script:
     - *install
-    - ruff check src tests
-    - ruff format --check src tests
+    - ruff check src tests steps
+    - ruff format --check src tests steps
     - mypy
     - featureforge lint
 
