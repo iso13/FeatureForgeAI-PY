@@ -10,8 +10,16 @@ import pytest
 from pytest_bdd import given, parsers, then, when
 
 from featureforge.core.context import ScenarioContext
+from featureforge.core.history import RunHistory
+from featureforge.core.metrics import Measurement
+from featureforge.core.perf import Baseline, LatencySummary, PinnedBaselines, judge
 from featureforge.core.settings import Settings
-from featureforge.core.stack import DeviceError, NumericalMismatch, RuntimeFault
+from featureforge.core.stack import (
+    DeviceError,
+    NumericalMismatch,
+    PerformanceRegression,
+    RuntimeFault,
+)
 from featureforge.core.telemetry import span
 from featureforge.packs.inference.backends import (
     Backend,
@@ -26,6 +34,7 @@ from featureforge.packs.inference.compare import ComparisonResult, compare_logit
 from featureforge.packs.inference.tolerance import TolerancePolicy
 
 DATA_DIR = Path(__file__).parent / "data"
+PINNED_BASELINES = Path(__file__).parent / "baselines.toml"
 POSITIONS = 16
 
 
@@ -35,6 +44,7 @@ class InferenceState:
     candidate: Backend | None = None
     cards: dict[int, Backend] = field(default_factory=dict)
     card_runs: dict[int, Generation] = field(default_factory=dict)
+    benchmark: dict[str, Measurement] = field(default_factory=dict)
     policy: TolerancePolicy | None = None
     comparison: ComparisonResult | None = None
     generations: list[Generation] = field(default_factory=list)
@@ -181,6 +191,95 @@ def comparison_flags(ctx: ScenarioContext, metric: str) -> None:
     comparison = _comparison(ctx)
     flagged = ", ".join(v.metric for v in comparison.violations) or "nothing"
     assert comparison.violated(metric), f"Expected '{metric}' to be flagged; flagged: {flagged}"
+
+
+# ─── performance ────────────────────────────────────────────────────────────
+
+
+def measurement_key(backend: Backend) -> str:
+    """Baselines match on this. Fault-injected runs get their own key so they never
+    become anyone's baseline."""
+    key = f"{backend.model}/{backend.dtype}"
+    faults = getattr(backend, "faults", None)
+    if faults is not None and faults != Faults():
+        key += "+faults"
+    return key
+
+
+@when(
+    parsers.parse(
+        'I send {requests:d} requests of {tokens:d} tokens from the "{prompt_set}" prompt set'
+    )
+)
+def run_benchmark(ctx: ScenarioContext, requests: int, tokens: int, prompt_set: str) -> None:
+    backend = _candidate(ctx)
+    prompts = load_prompts(prompt_set)
+    with span("inference.benchmark", model=backend.model, dtype=backend.dtype, requests=requests):
+        runs = [backend.generate(prompts[i % len(prompts)], tokens) for i in range(requests)]
+    ttft = LatencySummary.of([r.ttft_ms for r in runs])
+    tpot = LatencySummary.of([r.tpot_ms for r in runs])
+    throughput = sum(len(r.tokens) for r in runs) / sum(r.total_ms for r in runs) * 1000
+    key = measurement_key(backend)
+    state = ctx.state(InferenceState)
+    for name, value, unit, higher in (
+        ("ttft_p50_ms", ttft.p50, "ms", False),
+        ("ttft_p99_ms", ttft.p99, "ms", False),
+        ("tpot_p50_ms", tpot.p50, "ms", False),
+        ("throughput_tok_s", throughput, "tok/s", True),
+    ):
+        state.benchmark[name] = ctx.measure(name, value, unit, higher_is_better=higher, key=key)
+
+
+def _baselines(settings: Settings, history: RunHistory, key: str, name: str) -> list[Baseline]:
+    clean_key = key.removesuffix("+faults")  # fault runs are judged against the clean baseline
+    found = []
+    pinned = PinnedBaselines.load(settings.perf_baselines or PINNED_BASELINES).get(clean_key, name)
+    if pinned is not None:
+        found.append(Baseline(pinned, "pinned"))
+    good = history.baseline_measurement(clean_key, name)
+    if good is not None:
+        measurement, run = good
+        found.append(Baseline(measurement.value, "last-known-good", run.run_id))
+    return found
+
+
+def _judged(
+    ctx: ScenarioContext, history: RunHistory, metric: str, budget_pct: float
+) -> Measurement:
+    measured = ctx.state(InferenceState).benchmark.get(metric)
+    assert measured is not None, f"No '{metric}' measured — add 'When I send … requests …'"
+    baselines = _baselines(ctx.settings, history, measured.key, metric)
+    assert baselines, f"No baseline for {measured.key} {metric}: pin one in baselines.toml"
+    return judge(measured, baselines, budget_pct)
+
+
+def _describe(m: Measurement) -> str:
+    return (
+        f"{m.name} {m.value:.4g}{m.unit} vs {m.baseline_source} baseline {m.baseline:.4g}{m.unit}: "
+        f"{m.delta_pct:+.1f}% (budget {m.budget_pct:g}%)"
+    )
+
+
+@then(
+    parsers.re(
+        r'"(?P<metric>\w+)" should not (?:regress|drop) more than (?P<pct>[\d.]+)% '
+        r"against the baseline"
+    )
+)
+def within_budget(ctx: ScenarioContext, ff_history: RunHistory, metric: str, pct: str) -> None:
+    judged = _judged(ctx, ff_history, metric, float(pct))
+    ctx.measurements = [judged if m.name == metric else m for m in ctx.measurements]
+    if judged.regressed:
+        raise PerformanceRegression(f"Performance regression: {_describe(judged)}")
+
+
+@then(parsers.parse('"{metric}" should be flagged as a regression of more than {pct:g}%'))
+def flagged_as_regression(
+    ctx: ScenarioContext, ff_history: RunHistory, metric: str, pct: float
+) -> None:
+    judged = _judged(ctx, ff_history, metric, pct)
+    ctx.attach(_describe(judged), name=f"{metric}_verdict")
+    assert judged.regressed, f"Expected a regression to be flagged: {_describe(judged)}"
 
 
 # ─── determinism ────────────────────────────────────────────────────────────

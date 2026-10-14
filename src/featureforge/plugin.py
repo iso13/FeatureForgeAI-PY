@@ -15,6 +15,7 @@ World                → the ``ctx`` fixture (ScenarioContext)
 
 from __future__ import annotations
 
+import os
 import time
 import traceback
 from collections.abc import Generator, Iterator
@@ -25,6 +26,7 @@ import pytest
 
 from featureforge.collect import is_selected, load_project_steps, scenario_feature_file
 from featureforge.core.context import ScenarioContext
+from featureforge.core.history import RunHistory
 from featureforge.core.intelligence import (
     StackAttribution,
     attribute_failure,
@@ -39,6 +41,7 @@ from featureforge.core.intelligence import (
 )
 from featureforge.core.intelligence.models import utc_now
 from featureforge.core.llm import LLMClient, build_llm
+from featureforge.core.manifest import BuildManifest
 from featureforge.core.metrics import RunMetrics, ScenarioResult
 from featureforge.core.settings import Settings, find_pyproject
 from featureforge.core.stack import StackError
@@ -55,6 +58,7 @@ ATTEMPT_KEY = pytest.StashKey[int]()
 FIRST_FAILURE_KEY = pytest.StashKey[StackAttribution]()
 # Manifest component -> (last known-good version, this run's version); filled by run history.
 CHANGES_KEY = pytest.StashKey[dict[str, tuple[str, str]]]()
+HISTORY_KEY = pytest.StashKey[RunHistory]()
 
 CORE_PLUGINS = ("featureforge.core.browser", "featureforge.core.steps")
 
@@ -92,6 +96,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=0,
         help="Rerun a failed test up to N times; a pass on rerun is recorded as FLAKY",
     )
+    group.addoption(
+        "--ff-no-history", action="store_true", help="Don't add this run to the run history"
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -105,13 +112,26 @@ def pytest_configure(config: pytest.Config) -> None:
     settings = Settings.load(find_pyproject(config.rootpath), overrides=overrides)
     relative = {
         key: (config.rootpath / getattr(settings, key)).resolve()
-        for key in ("reports_dir", "features_dir", "steps_dir")
+        for key in ("reports_dir", "features_dir", "steps_dir", "history_dir")
         if not getattr(settings, key).is_absolute()
     }
     if relative:
         settings = settings.model_copy(update=relative)
     config.stash[SETTINGS_KEY] = settings
-    config.stash[METRICS_KEY] = RunMetrics(environment=settings.env)
+    manifest = BuildManifest.collect(
+        settings.manifest, settings.manifest_file, os.environ, cwd=config.rootpath
+    )
+    history = RunHistory(settings.history_dir, keep=settings.history_keep)
+    config.stash[HISTORY_KEY] = history
+    good = history.last_known_good()
+    config.stash[CHANGES_KEY] = (
+        manifest.changes_since(good.manifest) if good is not None and good.manifest else {}
+    )
+    config.stash[METRICS_KEY] = RunMetrics(
+        environment=settings.env,
+        manifest=manifest,
+        schedule=config.getoption("--ff-schedule"),
+    )
     init_telemetry(settings)
 
     for module in CORE_PLUGINS:
@@ -145,6 +165,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     settings = config.stash[SETTINGS_KEY]
     features = [Path(p).resolve() for p in config.getoption("--ff-feature")]
     tiers = selected_tiers(config)
+    config.stash[METRICS_KEY].tiers = [t.value for t in tiers] if tiers else []
     available = set(settings.tiers.available)
     keep: list[pytest.Item] = []
     dropped: list[pytest.Item] = []
@@ -179,6 +200,11 @@ def pytest_bdd_apply_tag(tag: str, function: Any) -> bool:
 @pytest.fixture(scope="session")
 def ff_settings(pytestconfig: pytest.Config) -> Settings:
     return pytestconfig.stash[SETTINGS_KEY]
+
+
+@pytest.fixture(scope="session")
+def ff_history(pytestconfig: pytest.Config) -> RunHistory:
+    return pytestconfig.stash[HISTORY_KEY]
 
 
 @pytest.fixture(scope="session")
@@ -467,6 +493,10 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pyte
     terminalreporter.section("FeatureForge")
     for line in metrics.render().splitlines():
         terminalreporter.write_line(line)
+    changes = config.stash.get(CHANGES_KEY, {})
+    if changes:
+        changed = ", ".join(f"{name} {old} → {new}" for name, (old, new) in changes.items())
+        terminalreporter.write_line(f"Changed since last known-good: {changed}")
     settings = config.stash[SETTINGS_KEY]
     terminalreporter.write_line(f"Metrics: {settings.reports_dir / 'run-metrics.json'}")
 
@@ -477,4 +507,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if metrics is not None and metrics.scenarios:
         metrics.finished_at = utc_now()
         metrics.write(config.stash[SETTINGS_KEY].reports_dir / "run-metrics.json")
+        history = config.stash.get(HISTORY_KEY, None)
+        worker = os.environ.get("PYTEST_XDIST_WORKER")  # workers report to the controller
+        if history is not None and not worker and not config.getoption("--ff-no-history"):
+            history.archive(metrics)
     shutdown_telemetry()

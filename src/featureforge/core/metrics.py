@@ -10,12 +10,14 @@ duration histogram (``src/core/support/metrics.ts``).
 from __future__ import annotations
 
 import json
+import uuid
 from collections import Counter
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from featureforge.core.intelligence.models import utc_now
+from featureforge.core.manifest import BuildManifest
 
 
 class Measurement(BaseModel):
@@ -25,6 +27,12 @@ class Measurement(BaseModel):
     value: float
     unit: str = ""
     higher_is_better: bool = False
+    key: str = ""  # what was measured, e.g. "toy-llm/int8"; baselines match on key + name
+    baseline: float | None = None  # the value it was compared against, if any
+    baseline_source: str = ""  # "pinned" | "last-known-good"
+    delta_pct: float | None = None  # signed change vs baseline, + means worse
+    budget_pct: float | None = None
+    regressed: bool = False
 
 
 class ScenarioResult(BaseModel):
@@ -54,9 +62,13 @@ class ScenarioResult(BaseModel):
 
 
 class RunMetrics(BaseModel):
+    run_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
     started_at: str = Field(default_factory=utc_now)
     finished_at: str | None = None
     environment: str = ""
+    manifest: BuildManifest | None = None
+    schedule: str | None = None
+    tiers: list[str] = Field(default_factory=list)  # tiers selected for this run (empty: all)
     scenarios: list[ScenarioResult] = Field(default_factory=list)
 
     @property
@@ -94,6 +106,10 @@ class RunMetrics(BaseModel):
         return dict(counter.most_common())
 
     @property
+    def regressions(self) -> list[tuple[ScenarioResult, Measurement]]:
+        return [(r, m) for r in self.scenarios for m in r.measurements if m.regressed]
+
+    @property
     def flaky(self) -> list[ScenarioResult]:
         return [result for result in self.scenarios if result.flaky]
 
@@ -125,6 +141,7 @@ class RunMetrics(BaseModel):
             "by_tier": self.by_tier,
             "failures_by_stack_layer": self.failures_by_stack_layer,
             "flaky": len(self.flaky),
+            "perf_regressions": len(self.regressions),
         }
         return json.dumps(payload, indent=2)
 
@@ -158,6 +175,12 @@ class RunMetrics(BaseModel):
         if self.failures_by_layer:
             layers = ", ".join(f"{k}={v}" for k, v in self.failures_by_layer.items())
             lines.append(f"Failures by root-cause layer: {layers}")
+        for result, m in self.regressions:
+            lines.append(
+                f"Regression: {m.name} {m.value:.4g}{m.unit} vs {m.baseline_source} "
+                f"{m.baseline:.4g}{m.unit} ({m.delta_pct:+.1f}%, budget {m.budget_pct:g}%) "
+                f"in {result.label}"
+            )
         if self.flaky:
             lines.append(f"Flaky (passed on rerun): {', '.join(r.label for r in self.flaky)}")
         return "\n".join(lines)

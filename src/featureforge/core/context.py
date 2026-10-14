@@ -87,11 +87,21 @@ class ScenarioContext:
 
     # ── measurements ────────────────────────────────────────────────────────
     def measure(
-        self, name: str, value: float, unit: str = "", *, higher_is_better: bool = False
+        self,
+        name: str,
+        value: float,
+        unit: str = "",
+        *,
+        higher_is_better: bool = False,
+        key: str = "",
     ) -> Measurement:
-        """Record a number for this scenario; it lands in run metrics and run history."""
+        """Record a number for this scenario; it lands in run metrics and run history.
+
+        ``key`` names what was measured (e.g. ``"toy-llm/int8"``); perf baselines
+        match on key + name.
+        """
         measurement = Measurement(
-            name=name, value=float(value), unit=unit, higher_is_better=higher_is_better
+            name=name, value=float(value), unit=unit, higher_is_better=higher_is_better, key=key
         )
         self.measurements = [m for m in self.measurements if m.name != name] + [measurement]
         return measurement

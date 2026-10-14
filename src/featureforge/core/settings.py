@@ -73,6 +73,13 @@ class Settings(BaseModel):
     tolerance_policy: Path | None = None  # inference pack; None = the pack's tolerances.toml
     device_backend: str | None = None  # "module:factory" building a card backend
     tiers: TierSettings = Field(default_factory=TierSettings)
+
+    # Run history & build manifest
+    history_dir: Path = Path(".featureforge/history")
+    history_keep: int = 200  # runs kept on disk
+    manifest: dict[str, Any] = Field(default_factory=dict)  # static [tool.featureforge.manifest]
+    manifest_file: Path | None = None  # JSON written by the build (FF_MANIFEST)
+    perf_baselines: Path | None = None  # pinned perf numbers; None = the pack's baselines.toml
     lint: LintSettings = Field(default_factory=LintSettings)
 
     @field_validator("env")
@@ -138,8 +145,9 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
     data = dict(section)
     for key in ("reports_dir", "features_dir", "steps_dir"):
         data[key] = (path.parent / str(data.get(key, key.removesuffix("_dir")))).resolve()
-    if "tolerance_policy" in data:
-        data["tolerance_policy"] = (path.parent / str(data["tolerance_policy"])).resolve()
+    for key in ("tolerance_policy", "manifest_file", "history_dir", "perf_baselines"):
+        if key in data:
+            data[key] = (path.parent / str(data[key])).resolve()
     return data
 
 
@@ -164,6 +172,8 @@ def _from_environ(environ: Mapping[str, str]) -> dict[str, Any]:
         "packs": _split(environ.get("FF_PACKS")),
         "tolerance_policy": environ.get("FF_TOLERANCE_POLICY"),
         "device_backend": environ.get("FF_DEVICE_BACKEND"),
+        "manifest_file": environ.get("FF_MANIFEST"),
+        "history_dir": environ.get("FF_HISTORY_DIR"),
     }
     return {key: value for key, value in mapping.items() if value is not None}
 

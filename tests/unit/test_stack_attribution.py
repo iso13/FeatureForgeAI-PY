@@ -197,7 +197,8 @@ def test_a_bad_card_is_attributed_to_hardware(pytester, monkeypatch):
     pytester.makefile(".toml", pyproject=CARD_PROJECT)
     pytester.makepyfile(test_all=COLLECT)
     result = pytester.runpytest_subprocess(*_EXTRA, "--ff-tier", "multi_card")
-    result.assert_outcomes(failed=1, deselected=8)
+    outcomes = result.parseoutcomes()
+    assert outcomes.get("failed") == 1 and not outcomes.get("passed")
     result.stdout.fnmatch_lines(
         ["*Stack layer: HARDWARE (95%, explicit)*", "*Card(s) 2 disagree with the other 3*"]
     )

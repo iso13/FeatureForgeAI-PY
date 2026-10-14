@@ -6,6 +6,7 @@ featureforge scaffold  → npm run scaffold:steps
 featureforge metrics   → (new) summarize reports/run-metrics.json
 featureforge packs     → (new) list installed packs
 featureforge plan      → (new) scenarios per tier, and what each schedule runs
+featureforge history   → (new) recent runs, what changed, and flaky tests
 """
 
 from __future__ import annotations
@@ -163,6 +164,45 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_history(args: argparse.Namespace) -> int:
+    from featureforge.core.history import RunHistory
+
+    settings = _settings()
+    history = RunHistory(Path(args.dir) if args.dir else settings.history_dir)
+    runs = history.runs()
+    if not runs:
+        print(f"No runs in {history.directory}; run `featureforge run` first.", file=sys.stderr)
+        return 2
+    print(f"{'started':<20} {'commit':<12} {'schedule':<9} {'pass':>7}  {'fail':>4}  details")
+    for run in runs[-args.last :]:
+        rate = "n/a" if run.pass_rate is None else f"{run.pass_rate:.1%}"
+        failed = run.counts["failed"] + run.counts["error"]
+        commit = run.manifest.git_commit[:10] if run.manifest else ""
+        details = [f"{k}={v}" for k, v in run.failures_by_stack_layer.items()]
+        details += [f"{len(run.regressions)} perf regression(s)"] if run.regressions else []
+        details += [f"{len(run.flaky)} flaky"] if run.flaky else []
+        print(
+            f"{run.started_at[:19]:<20} {commit:<12} {run.schedule or '-':<9} {rate:>7}  "
+            f"{failed:>4}  {', '.join(details)}"
+        )
+    latest = runs[-1]
+    good = history.last_known_good(before=latest.started_at)
+    if good is not None and good.manifest and latest.manifest:
+        changes = latest.manifest.changes_since(good.manifest)
+        if changes:
+            listed = ", ".join(f"{k} {old} → {new}" for k, (old, new) in changes.items())
+            print(f"Changed since last known-good ({good.started_at[:19]}): {listed}")
+    flaky = history.flaky_tests(window=args.window)
+    if flaky:
+        print(f"Flaky in the last {args.window} runs:")
+        for test in flaky[:10]:
+            print(
+                f"  {test.score:5.0%}  {test.label}  ({test.flips} flip(s) on the same build, "
+                f"{test.passed_on_rerun} pass(es) on rerun)"
+            )
+    return 0
+
+
 def _default_feature_dirs() -> list[Path]:
     """The enabled packs' features plus the project's ``features/`` folder."""
     from featureforge.collect import feature_paths
@@ -202,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="Scenarios per tier and what each schedule runs")
     plan.add_argument("--schedule", help="Show one schedule only")
+
+    history = sub.add_parser("history", help="Recent runs, what changed and flaky tests")
+    history.add_argument("--last", type=int, default=10)
+    history.add_argument("--window", type=int, default=20, help="Runs to scan for flakiness")
+    history.add_argument("--dir", help="History folder (default: history_dir setting)")
     return parser
 
 
@@ -220,6 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "metrics": cmd_metrics,
         "packs": cmd_packs,
         "plan": cmd_plan,
+        "history": cmd_history,
     }
     return handlers[args.command](args)
 

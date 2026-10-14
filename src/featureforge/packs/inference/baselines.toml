@@ -1,0 +1,25 @@
+# Pinned performance baselines for the inference pack.
+#
+# Reviewed numbers from the last release, checked against on every run in
+# addition to the last known-good run, so slow creep can't ratchet the baseline.
+# Update deliberately (with the release that earns it), never to make a run green.
+# Latency in ms (lower is better); throughput in tokens/s (higher is better).
+# Measured: 32 requests x 64 tokens over the smoke prompt set, simulated card.
+
+["toy-llm/bf16"]
+ttft_p50_ms = 24.4
+ttft_p99_ms = 25.0
+tpot_p50_ms = 5.19
+throughput_tok_s = 181.8
+
+["toy-llm/fp8_e4m3"]
+ttft_p50_ms = 15.4
+ttft_p99_ms = 15.9
+tpot_p50_ms = 3.10
+throughput_tok_s = 304.0
+
+["toy-llm/int8"]
+ttft_p50_ms = 16.4
+ttft_p99_ms = 16.8
+tpot_p50_ms = 3.29
+throughput_tok_s = 286.0
