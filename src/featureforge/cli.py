@@ -5,6 +5,7 @@ featureforge lint      → npm run lint:gherkin
 featureforge scaffold  → npm run scaffold:steps
 featureforge metrics   → (new) summarize reports/run-metrics.json
 featureforge packs     → (new) list installed packs
+featureforge plan      → (new) scenarios per tier, and what each schedule runs
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 from featureforge.core.settings import Settings, find_pyproject
 
 DEFAULT_TAGS = "not @wip and not @performanceTest and not @demo"
+EXCLUDED_BY_DEFAULT = {"wip", "performanceTest", "demo"}
 
 
 def cucumber_tags_to_markers(expression: str) -> str:
@@ -55,6 +57,10 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
             print(f"No such feature file or folder: {feature}", file=sys.stderr)
             return 4
         pytest_args.append(f"--ff-feature={feature}")
+    for tier in args.tier or []:
+        pytest_args.append(f"--ff-tier={tier}")
+    if args.schedule:
+        pytest_args.append(f"--ff-schedule={args.schedule}")
     if args.parallel and args.parallel > 1:
         pytest_args += ["-n", str(args.parallel)]  # requires pytest-xdist
     targets = [arg for arg in extra if Path(arg.split("::")[0]).exists()]
@@ -121,6 +127,42 @@ def cmd_packs(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan(args: argparse.Namespace) -> int:
+    from featureforge.core.tiers import Tier, tier_from_tags
+    from featureforge.tools.gherkin import find_feature_files, read_feature
+
+    settings = _settings()
+    counts: dict[Tier, int] = dict.fromkeys(Tier, 0)
+    for path in find_feature_files(_default_feature_dirs()):
+        feature = read_feature(path)
+        for scenario in feature.scenarios:
+            if scenario.kind == "Background":
+                continue
+            tags = [*feature.tags, *scenario.tags]
+            if any(t.lstrip("@") in EXCLUDED_BY_DEFAULT for t in tags):
+                continue
+            tier = tier_from_tags(tags) or settings.tiers.default
+            counts[tier] += scenario.example_count if scenario.is_outline else 1
+
+    schedules = settings.tiers.schedules
+    if args.schedule:
+        schedules = {args.schedule: settings.tiers.schedule(args.schedule)}
+    available = set(settings.tiers.available)
+    names = list(schedules)
+    print(f"{'tier':<12} {'scenarios':>9}  " + "  ".join(f"{n:>8}" for n in names) + "  runner")
+    for tier, count in counts.items():
+        cells = "  ".join(f"{'run' if tier in schedules[n] else '-':>8}" for n in names)
+        here = "yes" if tier in available else "skip"
+        print(f"{tier.value:<12} {count:>9}  {cells}  {here}")
+    for name in names:
+        total = sum(c for t, c in counts.items() if t in schedules[name])
+        skipped = sum(c for t, c in counts.items() if t in schedules[name] and t not in available)
+        note = f", {skipped} skipped on this runner" if skipped else ""
+        print(f"{name}: {total} scenario(s){note}")
+    print("(BDD scenarios; plain pytest tests are tier 'unit' unless marked tier_<name>)")
+    return 0
+
+
 def _default_feature_dirs() -> list[Path]:
     """The enabled packs' features plus the project's ``features/`` folder."""
     from featureforge.collect import feature_paths
@@ -140,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--pack", action="append")
     run.add_argument("--reports-dir")
     run.add_argument("--parallel", type=int, default=1)
+    run.add_argument("--tier", action="append", help="Only these tiers (comma list, repeatable)")
+    run.add_argument("--schedule", help="Run the tiers of a schedule: commit, nightly, release")
 
     lint = sub.add_parser("lint", help="Lint feature files")
     lint.add_argument("paths", nargs="*")
@@ -155,6 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
     metrics.add_argument("--top", type=int, default=5)
 
     sub.add_parser("packs", help="List installed packs")
+
+    plan = sub.add_parser("plan", help="Scenarios per tier and what each schedule runs")
+    plan.add_argument("--schedule", help="Show one schedule only")
     return parser
 
 
@@ -172,6 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "scaffold": cmd_scaffold,
         "metrics": cmd_metrics,
         "packs": cmd_packs,
+        "plan": cmd_plan,
     }
     return handlers[args.command](args)
 

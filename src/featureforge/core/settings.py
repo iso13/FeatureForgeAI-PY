@@ -20,6 +20,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from featureforge.core.tiers import TierSettings
+
 LLMProvider = Literal["none", "openai", "ollama"]
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -69,6 +71,8 @@ class Settings(BaseModel):
     features_dir: Path = Path("features")  # the project's own feature files
     steps_dir: Path = Path("steps")  # the project's own step definitions
     tolerance_policy: Path | None = None  # inference pack; None = the pack's tolerances.toml
+    device_backend: str | None = None  # "module:factory" building a card backend
+    tiers: TierSettings = Field(default_factory=TierSettings)
     lint: LintSettings = Field(default_factory=LintSettings)
 
     @field_validator("env")
@@ -101,7 +105,10 @@ class Settings(BaseModel):
         data: dict[str, Any] = {}
         if pyproject is not None and pyproject.is_file():
             data.update(_read_pyproject(pyproject))
-        data.update(_from_environ(os.environ if environ is None else environ))
+        env = os.environ if environ is None else environ
+        data.update(_from_environ(env))
+        if env.get("FF_TIERS_AVAILABLE"):
+            data["tiers"] = {**data.get("tiers", {}), "available": env["FF_TIERS_AVAILABLE"]}
         data.update({k: v for k, v in (overrides or {}).items() if v is not None})
         settings = cls.model_validate(data)
         if (
@@ -156,6 +163,7 @@ def _from_environ(environ: Mapping[str, str]) -> dict[str, Any]:
         "reports_dir": environ.get("FF_REPORTS_DIR"),
         "packs": _split(environ.get("FF_PACKS")),
         "tolerance_policy": environ.get("FF_TOLERANCE_POLICY"),
+        "device_backend": environ.get("FF_DEVICE_BACKEND"),
     }
     return {key: value for key, value in mapping.items() if value is not None}
 

@@ -186,6 +186,39 @@ class SimulatedAccelerator:
         return Generation(tokens, first, first + tpot * factor * (max_tokens - 1))
 
 
+# ─── card backends ──────────────────────────────────────────────────────────
+
+
+class CardFactory(Protocol):
+    """Builds a backend bound to one accelerator card. Set ``device_backend`` to
+    ``"package.module:factory"`` to qualify real hardware."""
+
+    def __call__(self, model: str, dtype: str, card: int) -> Backend: ...
+
+
+def simulated_card(model: str, dtype: str, card: int) -> Backend:
+    """Card factory backed by the simulator, for trying the hardware tiers anywhere.
+
+    ``FF_SIM_FAULTY_CARD=<n>`` makes card ``n`` return noisy logits, like a bad board.
+    """
+    import os
+
+    accelerator = SimulatedAccelerator(model=model, dtype=dtype, name=f"sim-card-{card}")
+    if os.environ.get("FF_SIM_FAULTY_CARD", "") == str(card):
+        accelerator.faults = Faults(noise_sigma=0.5)
+    return accelerator
+
+
+def load_card_factory(reference: str) -> CardFactory:
+    from importlib import import_module
+
+    module_name, _, attribute = reference.partition(":")
+    factory = getattr(import_module(module_name), attribute or "card_factory")
+    if not callable(factory):
+        raise TypeError(f"device_backend '{reference}' is not callable")
+    return factory  # type: ignore[no-any-return]
+
+
 # ─── real serving endpoint ──────────────────────────────────────────────────
 
 

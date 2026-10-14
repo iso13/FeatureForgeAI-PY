@@ -40,12 +40,14 @@ from featureforge.core.llm import LLMClient, build_llm
 from featureforge.core.metrics import RunMetrics, ScenarioResult
 from featureforge.core.settings import Settings, find_pyproject
 from featureforge.core.telemetry import init_telemetry, shutdown_telemetry, start_span
+from featureforge.core.tiers import Tier, parse_tiers, tier_from_tags
 from featureforge.packs import get_pack
 
 SETTINGS_KEY = pytest.StashKey[Settings]()
 METRICS_KEY = pytest.StashKey[RunMetrics]()
 SCENARIO_KEY = pytest.StashKey[dict[str, Any]]()
 CTX_KEY = pytest.StashKey[ScenarioContext]()
+TIER_KEY = pytest.StashKey[Tier]()
 
 CORE_PLUGINS = ("featureforge.core.browser", "featureforge.core.steps")
 
@@ -70,6 +72,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=[],
         help="Only run scenarios from this .feature file or folder (repeatable)",
     )
+    group.addoption(
+        "--ff-tier",
+        action="append",
+        default=[],
+        help="Only run these tiers: unit, sim, single_card, multi_card, rack (comma/repeat)",
+    )
+    group.addoption("--ff-schedule", help="Run the tiers of a named schedule (commit, nightly …)")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -97,19 +106,50 @@ def pytest_configure(config: pytest.Config) -> None:
     for name in settings.packs:
         config.pluginmanager.import_plugin(get_pack(name).plugin)
     load_project_steps(config.pluginmanager, settings.steps_dir)
+    for tier in Tier:
+        config.addinivalue_line("markers", f"{tier.marker}: test tier '{tier.value}'")
+
+
+def selected_tiers(config: pytest.Config) -> list[Tier] | None:
+    """Tiers chosen with --ff-tier / --ff-schedule; None means every tier."""
+    settings = config.stash[SETTINGS_KEY]
+    tiers = parse_tiers(config.getoption("--ff-tier"))
+    schedule = config.getoption("--ff-schedule")
+    if schedule:
+        tiers = list(dict.fromkeys([*tiers, *settings.tiers.schedule(schedule)]))
+    return tiers or None
+
+
+def item_tier(item: pytest.Item, default: Tier) -> Tier:
+    tagged = tier_from_tags(marker.name for marker in item.iter_markers())
+    if tagged is not None:
+        return tagged
+    return default if scenario_feature_file(item) is not None else Tier.UNIT
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """``--ff-feature``: keep only scenarios from the selected feature files/folders."""
-    selections = [Path(p).resolve() for p in config.getoption("--ff-feature")]
-    if not selections:
-        return
+    """Select by --ff-feature and tier; skip tiers this runner can't provide."""
+    settings = config.stash[SETTINGS_KEY]
+    features = [Path(p).resolve() for p in config.getoption("--ff-feature")]
+    tiers = selected_tiers(config)
+    available = set(settings.tiers.available)
     keep: list[pytest.Item] = []
     dropped: list[pytest.Item] = []
     for item in items:
+        tier = item_tier(item, settings.tiers.default)
+        item.stash[TIER_KEY] = tier
         feature_file = scenario_feature_file(item)
-        selected = feature_file is not None and is_selected(feature_file, selections)
-        (keep if selected else dropped).append(item)
+        if features and (feature_file is None or not is_selected(feature_file, features)):
+            dropped.append(item)
+            continue
+        if tiers is not None and tier not in tiers:
+            dropped.append(item)
+            continue
+        if tier not in available:
+            have = ", ".join(t.value for t in Tier if t in available) or "none"
+            reason = f"needs tier '{tier.value}'; this runner provides: {have}"
+            item.add_marker(pytest.mark.skip(reason=reason))
+        keep.append(item)
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = keep
@@ -274,8 +314,24 @@ def pytest_runtest_makereport(
     return report
 
 
+def _info_from_item(item: pytest.Item) -> dict[str, Any] | None:
+    """Scenario details for a scenario that never started (e.g. skipped at setup)."""
+    scenario = getattr(getattr(item, "function", None), "__scenario__", None)
+    if scenario is None:
+        return None
+    tags = set(scenario.feature.tags) | set(scenario.tags)
+    return {
+        "feature": _feature_name(scenario.feature),
+        "scenario": str(scenario.name),
+        "tags": sorted(tags),
+        "started": time.perf_counter(),
+    }
+
+
 def _record(item: pytest.Item, report: pytest.TestReport) -> None:
     info = item.stash.get(SCENARIO_KEY, None)
+    if info is None and report.skipped:
+        info = _info_from_item(item)
     if info is None:
         return  # not a BDD scenario
 
@@ -307,9 +363,10 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
             nodeid=item.nodeid,
             feature=info["feature"],
             scenario=info["scenario"],
-            example=context.variant if context is not None else "",
+            example=context.variant if context is not None else _callspec_id(item),
             tags=info["tags"],
             outcome=result,
+            tier=item.stash[TIER_KEY].value if TIER_KEY in item.stash else None,
             duration_s=round(time.perf_counter() - info["started"], 4),
             failed_step=brief.gherkin_step if brief else None,
             root_cause=brief.root_cause.value if brief else None,
@@ -318,6 +375,11 @@ def _record(item: pytest.Item, report: pytest.TestReport) -> None:
             measurements=list(context.measurements) if context is not None else [],
         )
     )
+
+
+def _callspec_id(item: pytest.Item) -> str:
+    callspec = getattr(item, "callspec", None)
+    return str(callspec.id) if callspec is not None else ""
 
 
 def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:

@@ -6,15 +6,21 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
 from pytest_bdd import given, parsers, then, when
 
 from featureforge.core.context import ScenarioContext
-from featureforge.core.stack import NumericalMismatch, RuntimeFault
+from featureforge.core.settings import Settings
+from featureforge.core.stack import DeviceError, NumericalMismatch, RuntimeFault
 from featureforge.core.telemetry import span
 from featureforge.packs.inference.backends import (
+    Backend,
+    CardFactory,
+    Faults,
     Generation,
     ReferenceBackend,
     SimulatedAccelerator,
+    load_card_factory,
 )
 from featureforge.packs.inference.compare import ComparisonResult, compare_logits, merge
 from featureforge.packs.inference.tolerance import TolerancePolicy
@@ -26,7 +32,9 @@ POSITIONS = 16
 @dataclass
 class InferenceState:
     reference: ReferenceBackend | None = None
-    candidate: SimulatedAccelerator | None = None
+    candidate: Backend | None = None
+    cards: dict[int, Backend] = field(default_factory=dict)
+    card_runs: dict[int, Generation] = field(default_factory=dict)
     policy: TolerancePolicy | None = None
     comparison: ComparisonResult | None = None
     generations: list[Generation] = field(default_factory=list)
@@ -41,10 +49,24 @@ def load_prompts(name: str) -> list[str]:
     return [json.loads(line)["prompt"] for line in lines if line.strip()]
 
 
-def _candidate(ctx: ScenarioContext) -> SimulatedAccelerator:
+def _candidate(ctx: ScenarioContext) -> Backend:
     candidate = ctx.state(InferenceState).candidate
     assert candidate is not None, "No accelerator configured — add 'Given the accelerator runs …'"
     return candidate
+
+
+def _faults(ctx: ScenarioContext) -> Faults:
+    candidate = _candidate(ctx)
+    assert isinstance(candidate, SimulatedAccelerator), "Faults can only be injected in simulation"
+    return candidate.faults
+
+
+@pytest.fixture
+def ff_cards(ff_settings: Settings) -> CardFactory:
+    """The configured card backend; skips the scenario when none is configured."""
+    if not ff_settings.device_backend:
+        pytest.skip("no device backend configured (set device_backend or FF_DEVICE_BACKEND)")
+    return load_card_factory(ff_settings.device_backend)
 
 
 # ─── setup ──────────────────────────────────────────────────────────────────
@@ -72,18 +94,34 @@ def accelerator_runs(ctx: ScenarioContext, model: str, dtype: str) -> None:
 
 @given(parsers.parse("a {percent:g}% scale drift is injected"))
 def inject_scale_drift(ctx: ScenarioContext, percent: float) -> None:
-    _candidate(ctx).faults.scale_drift = percent / 100
+    _faults(ctx).scale_drift = percent / 100
 
 
 @given("the accelerator output varies from call to call")
 def inject_nondeterminism(ctx: ScenarioContext) -> None:
-    faults = _candidate(ctx).faults
+    faults = _faults(ctx)
     faults.noise_sigma, faults.nondeterministic = 0.5, True
 
 
 @given(parsers.parse("a {percent:g}% slowdown is injected"))
 def inject_slowdown(ctx: ScenarioContext, percent: float) -> None:
-    _candidate(ctx).faults.slowdown = percent / 100
+    _faults(ctx).slowdown = percent / 100
+
+
+@given(parsers.parse('card {card:d} runs "{model}" in "{dtype}"'))
+def card_runs(
+    ctx: ScenarioContext, ff_cards: CardFactory, card: int, model: str, dtype: str
+) -> None:
+    ctx.state(InferenceState).candidate = ff_cards(model, dtype, card)
+
+
+@given(parsers.parse('cards {first:d} to {last:d} run "{model}" in "{dtype}"'))
+def cards_run(
+    ctx: ScenarioContext, ff_cards: CardFactory, first: int, last: int, model: str, dtype: str
+) -> None:
+    ctx.state(InferenceState).cards = {
+        card: ff_cards(model, dtype, card) for card in range(first, last + 1)
+    }
 
 
 # ─── numerical accuracy ─────────────────────────────────────────────────────
@@ -177,6 +215,35 @@ def runs_identical(ctx: ScenarioContext) -> None:
         raise RuntimeFault(
             f"Nondeterministic output: run {run} diverged from run 0 at token {position} "
             "on the same build, prompt and inputs"
+        )
+
+
+@when(parsers.parse("each card generates {tokens:d} tokens for the same prompt"))
+def each_card_generates(ctx: ScenarioContext, tokens: int) -> None:
+    state = ctx.state(InferenceState)
+    assert state.cards, "No cards configured — add 'Given cards … run …'"
+    prompt = load_prompts("smoke")[0]
+    state.card_runs = {
+        card: backend.generate(prompt, tokens) for card, backend in state.cards.items()
+    }
+
+
+def odd_cards_out(runs: dict[int, Generation]) -> list[int]:
+    """Cards whose tokens differ from the most common output across cards."""
+    outputs = [tuple(run.tokens) for run in runs.values()]
+    majority = max(set(outputs), key=outputs.count)
+    return [card for card, run in runs.items() if tuple(run.tokens) != majority]
+
+
+@then("every card should produce identical tokens")
+def cards_identical(ctx: ScenarioContext) -> None:
+    runs = ctx.state(InferenceState).card_runs
+    odd = odd_cards_out(runs)
+    if odd:
+        names = ", ".join(str(card) for card in odd)
+        raise DeviceError(
+            f"Card(s) {names} disagree with the other {len(runs) - len(odd)} card(s) on the "
+            "same build and prompt: suspect the board, not the software"
         )
 
 

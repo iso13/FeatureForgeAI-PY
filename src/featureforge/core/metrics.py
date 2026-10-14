@@ -34,6 +34,7 @@ class ScenarioResult(BaseModel):
     example: str = ""  # Examples row id for outline scenarios
     tags: list[str] = Field(default_factory=list)
     outcome: str  # passed | failed | skipped | error
+    tier: str | None = None
     duration_s: float = 0.0
     failed_step: str | None = None
     root_cause: str | None = None
@@ -75,6 +76,20 @@ class RunMetrics(BaseModel):
         )
         return dict(counter.most_common())
 
+    @property
+    def by_tier(self) -> dict[str, dict[str, int]]:
+        """Outcome counts per tier, cheapest tier first."""
+        from featureforge.core.tiers import Tier
+
+        order = {t.value: t.rank for t in Tier}
+        table: dict[str, Counter[str]] = {}
+        for result in self.scenarios:
+            table.setdefault(result.tier or "untiered", Counter())[result.outcome] += 1
+        return {
+            tier: dict(counts)
+            for tier, counts in sorted(table.items(), key=lambda kv: order.get(kv[0], 99))
+        }
+
     def slowest(self, limit: int = 5) -> list[ScenarioResult]:
         return sorted(self.scenarios, key=lambda r: r.duration_s, reverse=True)[:limit]
 
@@ -86,6 +101,7 @@ class RunMetrics(BaseModel):
             "pass_rate": self.pass_rate,
             "total_duration_s": round(sum(r.duration_s for r in self.scenarios), 3),
             "failures_by_layer": self.failures_by_layer,
+            "by_tier": self.by_tier,
         }
         return json.dumps(payload, indent=2)
 
@@ -107,6 +123,12 @@ class RunMetrics(BaseModel):
             f"Scenarios: {len(self.scenarios)}  passed {c['passed']}  failed {c['failed']}  "
             f"error {c['error']}  skipped {c['skipped']}  pass rate {rate}",
         ]
+        if any(r.tier for r in self.scenarios):
+            tiers = "; ".join(
+                f"{tier} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                for tier, counts in self.by_tier.items()
+            )
+            lines.append(f"By tier: {tiers}")
         if self.failures_by_layer:
             layers = ", ".join(f"{k}={v}" for k, v in self.failures_by_layer.items())
             lines.append(f"Failures by root-cause layer: {layers}")

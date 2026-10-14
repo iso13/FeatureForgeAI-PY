@@ -62,6 +62,17 @@ env = "qa"
 packs = ["ai", "inference"]
 reports_dir = "reports"
 
+# Test tiers: what each runner has and what each trigger runs. A selected test
+# whose tier isn't available here is skipped with the reason.
+[tool.featureforge.tiers]
+default = "sim"
+available = ["unit", "sim"]   # CI hardware runners: FF_TIERS_AVAILABLE=unit,sim,single_card
+
+[tool.featureforge.tiers.schedules]
+commit = ["unit", "sim"]
+nightly = ["unit", "sim", "single_card", "multi_card"]
+release = ["unit", "sim", "single_card", "multi_card", "rack"]
+
 [tool.featureforge.environments]
 qa = "https://qa.test.com/"
 dev = "https://dev.test.com/"
