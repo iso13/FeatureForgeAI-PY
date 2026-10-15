@@ -25,7 +25,12 @@ from typing import Any
 
 import pytest
 
-from featureforge.collect import is_selected, load_project_steps, scenario_feature_file
+from featureforge.collect import (
+    is_selected,
+    load_project_steps,
+    scenario_feature_file,
+    scenario_template,
+)
 from featureforge.core.context import ScenarioContext
 from featureforge.core.history import RunHistory
 from featureforge.core.intelligence import (
@@ -394,7 +399,7 @@ def pytest_runtest_makereport(
 
 def _info_from_item(item: pytest.Item) -> dict[str, Any] | None:
     """Scenario details for a scenario that never started (e.g. skipped at setup)."""
-    scenario = getattr(getattr(item, "function", None), "__scenario__", None)
+    scenario = scenario_template(item)
     if scenario is None:
         return None
     tags = set(scenario.feature.tags) | set(scenario.tags)

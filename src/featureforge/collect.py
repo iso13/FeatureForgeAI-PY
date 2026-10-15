@@ -81,9 +81,30 @@ def _check_package_origin(steps_dir: Path) -> None:
         )
 
 
+def scenario_template(item: Any) -> Any:
+    """The pytest-bdd scenario behind a collected item, or None for a plain test.
+
+    pytest-bdd < 9 sets ``function.__scenario__``; 9.x keeps a registry instead.
+    """
+    function = getattr(item, "function", None)
+    if function is None:
+        return None
+    scenario = getattr(function, "__scenario__", None)
+    if scenario is not None:
+        return scenario
+    try:
+        from pytest_bdd.scenario import scenario_wrapper_template_registry as registry
+    except ImportError:
+        return None
+    try:
+        return registry.get(function)
+    except TypeError:  # not weak-referenceable: not a scenario
+        return None
+
+
 def scenario_feature_file(item: Any) -> Path | None:
     """The ``.feature`` file a collected pytest-bdd item came from, if any."""
-    scenario = getattr(getattr(item, "function", None), "__scenario__", None)
+    scenario = scenario_template(item)
     filename = getattr(getattr(scenario, "feature", None), "filename", None)
     return Path(filename).resolve() if filename else None
 
